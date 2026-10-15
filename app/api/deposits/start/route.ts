@@ -89,6 +89,7 @@ export async function POST(req: Request) {
     phone: body.phone?.replace(/\D/g, "") || user.phone,
     email: user.email ?? "",
     name: user.name,
+    userId: user.id,
     // What the player picked on the deposit screen. The rail is told that
     // rather than what their prefix implies, because a ported number makes
     // the prefix wrong and the charge is refused on it.

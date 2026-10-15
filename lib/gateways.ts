@@ -62,6 +62,8 @@ export interface GatewayAdapter {
 
 export interface StartOpts {
   reference: string;
+  /** The player's id, where a rail can file the charge against it. */
+  userId?: string;
   /**
    * The network the player picked on the deposit screen, as its label.
    *
@@ -601,6 +603,132 @@ const theteller: GatewayAdapter = {
  * uploads a screenshot. Nothing is automatic, so the status stays pending until
  * the operator confirms it in the console.
  */
+// ------------------------------------------------------------------ Pycue
+
+const PYCUE_BASE = "https://pycue.com/api/v1";
+
+/** Their channel names. TELECEL is what Vodafone Cash became. */
+function pycueNetwork(label: string | undefined, phone: string): "MTN" | "TELECEL" | "AIRTELTIGO" {
+  const network = resolveNetwork(label, phone);
+  if (network === "VODAFONE") return "TELECEL";
+  if (network === "AIRTELTIGO") return "AIRTELTIGO";
+  return "MTN";
+}
+
+/**
+ * Pycue: Ghana mobile money.
+ *
+ * Their documentation is explicit about two things that decide how this is
+ * written, and both are easy to get wrong:
+ *
+ *   - There is no outbound webhook. Nothing is ever delivered to us, so the
+ *     only way a completion is ever seen is the response to our own request
+ *     or polling. A credit path waiting on a callback would never fire.
+ *   - RESERVED means the outcome is unknown, not failed. Reading it as a
+ *     refusal would write off a payout that is still in flight.
+ *
+ * clientReference is our own reference and is unique per organisation at
+ * their database level, so a retried start returns the original transaction
+ * rather than charging twice.
+ */
+const pycue: GatewayAdapter = {
+  id: "pycue",
+  label: "Mobile Money",
+  async start({ reference, amount, phone, network, userId }) {
+    const key = env("PYCUE_SECRET_KEY");
+    if (!key) return { ok: false, error: "Mobile money is not available right now" };
+
+    try {
+      const res = await fetch(`${PYCUE_BASE}/deposits`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          // Decimal string in cedis, at most two places -- not pesewas.
+          amount: amount.toFixed(2),
+          phoneNumber: localGhanaNumber(phone),
+          network: pycueNetwork(network, phone),
+          clientReference: reference,
+          ...(userId ? { externalUserId: userId } : {}),
+        }),
+        signal: AbortSignal.timeout(25_000),
+      });
+
+      const json = (await res.json().catch(() => null)) as Record<string, unknown> | null;
+      const data = (json?.data ?? {}) as Record<string, unknown>;
+      const txn = (data.transaction ?? data) as Record<string, unknown>;
+      const id = txn?.id ? String(txn.id) : null;
+      const metadata = id ? { pycueTransactionId: id } : undefined;
+
+      if (json?.success === true && id) {
+        // Their 201 is an accepted prompt, never a confirmation of funds. The
+        // status poll is what decides, which is the same shape every other
+        // rail here uses.
+        return { ok: true, metadata, awaitingPrompt: true };
+      }
+
+      const error = (json?.error ?? {}) as Record<string, unknown>;
+      const code = String(error.code ?? "");
+      console.error("[pycue] deposit refused", { reference, code, message: error.message });
+
+      if (["UNAUTHORIZED", "FORBIDDEN", "ORG_SUSPENDED", "CONFIGURATION_ERROR"].includes(code)) {
+        return { ok: false, metadata, error: "Deposits are being set up. Please try again shortly." };
+      }
+      if (code === "PROVIDER_ERROR") {
+        return { ok: false, metadata, error: "The payment service is busy. Please try again in a minute." };
+      }
+      return {
+        ok: false,
+        metadata,
+        error: "That payment was declined. Check there is enough money in that mobile money wallet, then try again.",
+      };
+    } catch (err) {
+      // A charge that never answered may still have prompted the handset, so
+      // this is handed to the poll rather than called a failure.
+      console.error("[pycue] deposit did not answer", { reference, err });
+      return { ok: true, awaitingPrompt: true };
+    }
+  },
+
+  async status(reference, meta) {
+    const key = env("PYCUE_SECRET_KEY");
+    const id = meta?.pycueTransactionId;
+    if (!key || !id) return { status: "pending" };
+
+    try {
+      const res = await fetch(`${PYCUE_BASE}/transactions/${encodeURIComponent(String(id))}`, {
+        headers: { Authorization: `Bearer ${key}` },
+        cache: "no-store",
+        signal: AbortSignal.timeout(15_000),
+      });
+      if (!res.ok) return { status: "pending" };
+
+      const json = (await res.json().catch(() => null)) as Record<string, unknown> | null;
+      const data = (json?.data ?? {}) as Record<string, unknown>;
+      const txn = (data.transaction ?? data) as Record<string, unknown>;
+      const state = String(txn?.status ?? "").toUpperCase();
+
+      if (state === "SUCCESS") {
+        const paid = Number(txn?.amount);
+        return {
+          status: "confirmed",
+          paidAmount: Number.isFinite(paid) && paid > 0 ? paid : undefined,
+          paidCurrency: typeof txn?.currency === "string" ? txn.currency : undefined,
+        };
+      }
+      if (state === "FAILED" || state === "CANCELLED") return { status: "failed" };
+
+      // PENDING, PROCESSING and RESERVED are all "keep asking". RESERVED in
+      // particular is documented as an unknown outcome, never a refusal.
+      if (state && !["PENDING", "PROCESSING", "RESERVED"].includes(state)) {
+        console.warn("[pycue] unmapped status", { reference, id, state });
+      }
+      return { status: "pending" };
+    } catch {
+      return { status: "pending" };
+    }
+  },
+};
+
 const manual: GatewayAdapter = {
   id: "manual",
   label: "Mobile money transfer",
@@ -617,6 +745,7 @@ const ADAPTERS: Record<Gateway, GatewayAdapter> = {
   flutterwave_card: flutterwaveCard,
   webrabbit,
   theteller,
+  pycue,
   manual,
 };
 
