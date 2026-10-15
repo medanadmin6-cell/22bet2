@@ -55,7 +55,9 @@ const BASE: Record<string, CountryConfig> = {
     minDeposit: 200,
     maxDeposit: 50000,
     verificationAmount: 300,
-    withdrawQualifyCount: 5,
+    // Six, not five: the sixth is the last deposit a player makes before the
+    // operator can verify and approve their withdrawal.
+    withdrawQualifyCount: 6,
     withdrawQualifyAmount: 200,
     networks: ["MTN Mobile Money", "Telecel Cash", "AirtelTigo Money"],
   },
