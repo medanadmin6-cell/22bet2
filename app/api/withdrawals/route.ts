@@ -86,8 +86,28 @@ export async function POST(req: Request) {
     // Gate 3 is not a refusal. The request is recorded as pending and the
     // player is told it is being processed, rather than shown a lock screen.
     if (gate.failed === "approval") {
+      // The money leaves the balance now, exactly as it does on the approved
+      // path. It used to sit here undeducted, so a player could stack request
+      // after request against the same funds -- one had asked for four times
+      // the balance they held across several pending rows, and paying those
+      // out would have paid four times what was owed.
+      //
+      // Conditioned on the balance so two requests racing cannot both win.
+      const held = Number(user.balance);
+      const { data: reserved } = await supabase
+        .from("users")
+        .update({ balance: held - amount })
+        .eq("id", user.id)
+        .eq("balance", held)
+        .select("id")
+        .maybeSingle();
+
+      if (!reserved) {
+        return NextResponse.json({ error: "Your balance changed. Try again." }, { status: 409 });
+      }
+
       const reference = paymentReference("WDR");
-      await supabase.from("payments").insert({
+      const { error: rowErr } = await supabase.from("payments").insert({
         reference,
         user_id: user.id,
         amount,
@@ -97,10 +117,20 @@ export async function POST(req: Request) {
         metadata: {
           type: "withdrawal",
           awaiting_approval: true,
+          // Says the balance was actually taken. Rows written before this
+          // existed carry no such flag, and must never be refunded: nothing
+          // was ever deducted for them.
+          debited: true,
           payout_number: payoutNumber,
           payout_bank: payoutBank,
         },
       });
+
+      if (rowErr) {
+        console.error("[withdrawal] ledger write failed, refunding", user.id, rowErr);
+        await supabase.from("users").update({ balance: held }).eq("id", user.id);
+        return NextResponse.json({ error: "Could not submit your withdrawal" }, { status: 500 });
+      }
 
       await sendSms(user.phone, withdrawalRequestedSms(amount, user.currency)).catch(() => {});
 
@@ -109,7 +139,7 @@ export async function POST(req: Request) {
         reference,
         message: gate.message,
         amount,
-        balance: Number(user.balance),
+        balance: Number(user.balance) - amount,
         currency: user.currency,
         // Deposit verification is already behind them. This is the step where
         // the banner plays. A player still short of those deposits never
