@@ -607,8 +607,9 @@ const theteller: GatewayAdapter = {
 
 const PYCUE_BASE = "https://pycue.com/api/v1";
 
-/** Their channel names. TELECEL is what Vodafone Cash became. */
-function pycueNetwork(label: string | undefined, phone: string): "MTN" | "TELECEL" | "AIRTELTIGO" {
+/** MTN / TELECEL / AIRTELTIGO, the vocabulary both Pycue and AkwaPay use.
+ *  TELECEL is what Vodafone Cash became. */
+function momoNetwork(label: string | undefined, phone: string): "MTN" | "TELECEL" | "AIRTELTIGO" {
   const network = resolveNetwork(label, phone);
   if (network === "VODAFONE") return "TELECEL";
   if (network === "AIRTELTIGO") return "AIRTELTIGO";
@@ -646,7 +647,7 @@ const pycue: GatewayAdapter = {
           // Decimal string in cedis, at most two places -- not pesewas.
           amount: amount.toFixed(2),
           phoneNumber: localGhanaNumber(phone),
-          network: pycueNetwork(network, phone),
+          network: momoNetwork(network, phone),
           clientReference: reference,
           ...(userId ? { externalUserId: userId } : {}),
         }),
@@ -729,6 +730,127 @@ const pycue: GatewayAdapter = {
   },
 };
 
+// ----------------------------------------------------------------- AkwaPay
+
+const AKWAPAY_BASE = "https://akwapayapi.onrender.com/v1";
+
+/**
+ * AkwaPay: Ghana mobile money, two endpoints and nothing else.
+ *
+ * Amounts are integer pesewas in both directions, which is the opposite of
+ * theTeller and the one thing here that would cost real money to get wrong.
+ * GHS 1.00 is sent as 100 and reads back as 102 — they add 2% on top, so the
+ * figure on the intent is the customer's debit, not what was asked for.
+ * settledAmount caps at the request, so the fee cannot inflate a credit.
+ *
+ * Idempotency-Key carries our reference, so a retried start returns the
+ * original intent rather than prompting twice.
+ */
+const akwapay: GatewayAdapter = {
+  id: "akwapay",
+  label: "Mobile Money",
+  async start({ reference, amount, phone, network }) {
+    const key = env("AKWAPAY_SECRET_KEY");
+    if (!key) return { ok: false, error: "Mobile money is not available right now" };
+
+    try {
+      const res = await fetch(`${AKWAPAY_BASE}/payment_intents`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${key}`,
+          "Content-Type": "application/json",
+          "Idempotency-Key": reference,
+        },
+        body: JSON.stringify({
+          // Integer pesewas. A decimal here is silently taken as pesewas too,
+          // so rounding is done on our side rather than trusting theirs.
+          amount: Math.round(amount * 100),
+          currency: "GHS",
+          method: "mobile_money",
+          network: momoNetwork(network, phone),
+          customer: { phone: localGhanaNumber(phone) },
+          reference,
+        }),
+        signal: AbortSignal.timeout(25_000),
+      });
+
+      const json = (await res.json().catch(() => null)) as Record<string, unknown> | null;
+      const id = json?.id ? String(json.id) : null;
+
+      if (res.ok && id) {
+        return { ok: true, metadata: { akwapayIntentId: id }, awaitingPrompt: true };
+      }
+
+      const error = (json?.error ?? {}) as Record<string, unknown>;
+      const code = String(error.code ?? "");
+      console.error("[akwapay] intent refused", { reference, status: res.status, code, message: error.message });
+
+      // They rate-limit a number that has been pushed at too often, and say
+      // when it frees up. A player retrying harder only extends it.
+      if (code === "number_blocked") {
+        return {
+          ok: false,
+          error: "Too many payment attempts on that number. Wait a few minutes, then try again.",
+        };
+      }
+      if (code === "malformed" || res.status === 401 || res.status === 403) {
+        return { ok: false, error: "Deposits are being set up. Please try again shortly." };
+      }
+      if (code === "invalid_network") {
+        return { ok: false, error: "That number is not on a supported mobile money network." };
+      }
+      return {
+        ok: false,
+        error: "That payment was declined. Check there is enough money in that mobile money wallet, then try again.",
+      };
+    } catch (err) {
+      // The prompt may already be out, so this goes to the poll rather than
+      // being called a failure.
+      console.error("[akwapay] intent did not answer", { reference, err });
+      return { ok: true, awaitingPrompt: true };
+    }
+  },
+
+  async status(reference, meta) {
+    const key = env("AKWAPAY_SECRET_KEY");
+    const id = meta?.akwapayIntentId;
+    if (!key || !id) return { status: "pending" };
+
+    try {
+      const res = await fetch(`${AKWAPAY_BASE}/payment_intents/${encodeURIComponent(String(id))}`, {
+        headers: { Authorization: `Bearer ${key}` },
+        cache: "no-store",
+        signal: AbortSignal.timeout(15_000),
+      });
+      if (!res.ok) return { status: "pending" };
+
+      const json = (await res.json().catch(() => null)) as Record<string, unknown> | null;
+      const state = String(json?.status ?? "").toLowerCase();
+
+      if (state === "succeeded" || state === "success") {
+        // Pesewas back to cedis. Carries their 2% on top of what was asked
+        // for, which settledAmount then caps at the request.
+        const minor = Number(json?.amount);
+        return {
+          status: "confirmed",
+          paidAmount: Number.isFinite(minor) && minor > 0 ? minor / 100 : undefined,
+          paidCurrency: typeof json?.currency === "string" ? json.currency : undefined,
+        };
+      }
+      if (["failed", "canceled", "cancelled", "expired"].includes(state)) return { status: "failed" };
+
+      // requires_action is the prompt sitting on the handset. Anything we do
+      // not recognise is left pending rather than read as a refusal.
+      if (state && !["requires_action", "processing", "pending"].includes(state)) {
+        console.warn("[akwapay] unmapped status", { reference, id, state });
+      }
+      return { status: "pending" };
+    } catch {
+      return { status: "pending" };
+    }
+  },
+};
+
 const manual: GatewayAdapter = {
   id: "manual",
   label: "Mobile money transfer",
@@ -746,6 +868,7 @@ const ADAPTERS: Record<Gateway, GatewayAdapter> = {
   webrabbit,
   theteller,
   pycue,
+  akwapay,
   manual,
 };
 

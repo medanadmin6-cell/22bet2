@@ -11,6 +11,7 @@ export type Gateway =
   | "webrabbit"
   | "theteller"
   | "pycue"
+  | "akwapay"
   | "manual";
 
 export type KycKind = "bvn" | "nin" | "national_id";
