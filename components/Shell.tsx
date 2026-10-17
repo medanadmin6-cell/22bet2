@@ -37,12 +37,19 @@ function HeaderActions({ onOpenAccount }: { onOpenAccount: () => void }) {
     if (!playerId) return;
     let alive = true;
     const tick = async () => {
+      // What the balance was when this read set off. A withdrawal or a placed
+      // bet can land while the request is in flight, and writing the figure
+      // fetched beforehand would put the old balance back on screen -- a
+      // player watching their money not move after a withdrawal they just
+      // made. If anything changed underneath us, this read is already stale.
+      const before = useSession.getState().player?.balance;
       try {
         const res = await fetch(`/api/me?userId=${playerId}`);
         if (!res.ok) return;
         const json = await res.json();
         if (!alive) return;
-        if (json.user) setBalance(Number(json.user.balance));
+        const current = useSession.getState().player?.balance;
+        if (json.user && current === before) setBalance(Number(json.user.balance));
         if (typeof json.openBets === "number") setOpenBets(json.openBets);
       } catch {
         /* the header balance is not worth an error state */
