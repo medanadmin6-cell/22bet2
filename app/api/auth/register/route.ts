@@ -51,15 +51,31 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "That phone number already has an account" }, { status: 409 });
   }
 
-  // A referral code attributes the player to a partner permanently.
+  // A referral code attributes the player to a partner permanently, and there
+  // is no second chance at it: commission is paid on every deposit this player
+  // ever makes, or on none of them.
+  //
+  // So a code that does not match is refused rather than ignored. It used to
+  // fall through to null, which meant a single mistyped character silently
+  // cost a partner every cedi that player would go on to earn them, with
+  // nobody told. The field is optional -- clearing it registers fine.
   let referredBy: string | null = null;
-  if (referralCode?.trim()) {
+  const code = referralCode?.trim().toUpperCase();
+  if (code) {
     const { data: partner } = await supabase
       .from("sub_admins")
       .select("id")
-      .eq("referral_code", referralCode.trim().toUpperCase())
+      .eq("referral_code", code)
       .maybeSingle();
-    if (partner) referredBy = partner.id;
+
+    if (!partner) {
+      console.warn("[register] referral code not recognised", code);
+      return NextResponse.json(
+        { error: "That referral code was not recognised. Check it, or clear the field to sign up without one." },
+        { status: 400 },
+      );
+    }
+    referredBy = partner.id;
   }
 
   const passwordHash = await bcrypt.hash(password, 10);
