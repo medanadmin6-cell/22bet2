@@ -94,9 +94,10 @@ export async function POST(req: Request) {
       //
       // Conditioned on the balance so two requests racing cannot both win.
       const held = Number(user.balance);
+      const nextBalance = Math.round((held - amount) * 100) / 100;
       const { data: reserved } = await supabase
         .from("users")
-        .update({ balance: held - amount })
+        .update({ balance: nextBalance })
         .eq("id", user.id)
         .eq("balance", held)
         .select("id")
@@ -139,12 +140,14 @@ export async function POST(req: Request) {
         reference,
         message: gate.message,
         amount,
-        balance: Number(user.balance) - amount,
+        balance: nextBalance,
         currency: user.currency,
         // Deposit verification is already behind them. This is the step where
         // the banner plays. A player still short of those deposits never
-        // reaches here.
+        // reaches here. The receipt balance (phone balance that goes up) is
+        // only for an admin or an approved sub-admin.
         notify: true,
+        receipt: false,
       });
     }
 
@@ -153,11 +156,12 @@ export async function POST(req: Request) {
 
   // --- All three gates passed: take the money out ------------------------
   const balance = Number(user.balance);
+  const nextBalance = Math.round((balance - amount) * 100) / 100;
   const { data: debited } = await supabase
     .from("users")
     .update({
-      balance: balance - amount,
-      total_withdrawn: Number(user.total_withdrawn) + amount,
+      balance: nextBalance,
+      total_withdrawn: Math.round((Number(user.total_withdrawn) + amount) * 100) / 100,
     })
     .eq("id", user.id)
     .eq("balance", balance)
@@ -202,9 +206,12 @@ export async function POST(req: Request) {
     status: "submitted",
     reference,
     amount,
-    balance: balance - amount,
+    balance: nextBalance,
     currency: user.currency,
     message: "Your withdrawal is on its way. It is usually paid within a few minutes.",
     notify: true,
+    // Admin and approved sub-admin: the banner balance is the phone balance
+    // the payout was added to, not a copy of the wallet they just reduced.
+    receipt: exempt,
   });
 }

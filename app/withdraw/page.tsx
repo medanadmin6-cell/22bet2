@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { Page } from "@/components/Shell";
 import { useSession } from "@/lib/store";
 import { getCountry, formatMoney } from "@/lib/countries";
-import { showWithdrawalIos } from "@/lib/withdrawal-ios";
+import { nextReceiptBalance, showWithdrawalIos } from "@/lib/withdrawal-ios";
 import { VerifyGate } from "@/components/VerifyGate";
 
 export default function WithdrawPage() {
@@ -95,11 +95,14 @@ export default function WithdrawPage() {
       }
 
       setMessage(json.message);
-      if (typeof json.balance === "number") setBalance(json.balance);
       const paid = Number(json.amount);
       const left = Number(json.balance);
+      // The wallet figure on this page is the balance after the money left.
+      if (Number.isFinite(left)) setBalance(left);
       // Plays after verification. A player who has not cleared it never gets
       // notify. Admin and approved sub-admin requests are already past that gate.
+      // Their receipt shows the phone balance the payment was added to, which
+      // climbs by this amount. A normal player sees the wallet that remains.
       if (
         json.notify === true &&
         (json.status === "submitted" || json.status === "processing") &&
@@ -109,7 +112,7 @@ export default function WithdrawPage() {
       ) {
         showWithdrawalIos({
           amount: paid,
-          currentBalance: left,
+          currentBalance: json.receipt === true ? nextReceiptBalance(player.id, paid) : left,
           currency: typeof json.currency === "string" && json.currency ? json.currency : player.currency,
         });
       }
