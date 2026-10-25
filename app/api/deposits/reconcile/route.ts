@@ -49,6 +49,21 @@ export async function POST(req: Request) {
     if (payment.provider === "manual") continue;
 
     const outcome = await adapterFor(payment.provider as Gateway).status(payment.reference, meta);
+
+    // A definitive refusal is written down, exactly as the nightly sweep does.
+    // Every adapter reports anything it does not recognise as pending, so this
+    // only lands on a rail's own final word -- and it stops a dead prompt being
+    // re-polled by every sweep after it, which matters now the shell sweeps
+    // every couple of minutes rather than only on the account screen.
+    if (outcome.status === "failed") {
+      await supabase
+        .from("payments")
+        .update({ status: "failed", resolved_at: new Date().toISOString() })
+        .eq("reference", payment.reference)
+        .eq("status", "pending");
+      continue;
+    }
+
     if (outcome.status !== "confirmed") continue;
 
     const result = await applyDepositCredit({

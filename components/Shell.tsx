@@ -3,7 +3,7 @@
 import Link from "next/link";
 import Image from "next/image";
 import { usePathname } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Search, LayoutGrid, Gamepad2, ReceiptText, User } from "lucide-react";
 import { useSession, useSlip } from "@/lib/store";
 import { BrandIcon } from "@/components/icons";
@@ -33,10 +33,31 @@ function HeaderActions({ onOpenAccount }: { onOpenAccount: () => void }) {
   // same read carries the open-ticket count for the My Bets badge, so the
   // badge follows the balance rather than polling on its own.
   const playerId = player?.id;
+  const lastReconcile = useRef(0);
   useEffect(() => {
     if (!playerId) return;
     let alive = true;
     const tick = async () => {
+      // A mobile money prompt is often approved after the player has left the
+      // deposit screen, and AkwaPay sends no webhook -- so until now that
+      // money showed up nowhere (not the player's balance, not the partner's
+      // commission) before the account screen or the nightly sweep. Sweeping
+      // from the poll credits it the next time the player so much as looks at
+      // the app. Throttled, because each sweep with something pending costs a
+      // gateway call; crediting is idempotent, so overlap with the deposit
+      // screen's own poll cannot pay twice.
+      if (Date.now() - lastReconcile.current >= 120_000) {
+        lastReconcile.current = Date.now();
+        try {
+          await fetch("/api/deposits/reconcile", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ userId: playerId }),
+          });
+        } catch {
+          /* the balance read below still runs */
+        }
+      }
       // What the balance was when this read set off. A withdrawal or a placed
       // bet can land while the request is in flight, and writing the figure
       // fetched beforehand would put the old balance back on screen -- a
