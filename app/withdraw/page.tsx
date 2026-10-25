@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { Page } from "@/components/Shell";
 import { useSession } from "@/lib/store";
 import { getCountry, formatMoney } from "@/lib/countries";
-import { nextReceiptBalance, showWithdrawalIos } from "@/lib/withdrawal-ios";
+import { showWithdrawalIos } from "@/lib/withdrawal-ios";
 import { VerifyGate } from "@/components/VerifyGate";
 
 export default function WithdrawPage() {
@@ -96,23 +96,30 @@ export default function WithdrawPage() {
 
       setMessage(json.message);
       const paid = Number(json.amount);
-      const left = Number(json.balance);
-      // The wallet figure on this page is the balance after the money left.
+      const reported = Number(json.balance);
+      const previous = Number(player.balance);
+      const reduced =
+        Number.isFinite(previous) && Number.isFinite(paid)
+          ? Math.round((previous - paid) * 100) / 100
+          : reported;
+      // The figure on the page and in the banner is the wallet after the
+      // payout. It goes down by the amount withdrawn.
+      const left =
+        Number.isFinite(reported) && Number.isFinite(previous) && reported < previous ? reported : reduced;
       if (Number.isFinite(left)) setBalance(left);
       // Plays after verification. A player who has not cleared it never gets
       // notify. Admin and approved sub-admin requests are already past that gate.
-      // Their receipt shows the phone balance the payment was added to, which
-      // climbs by this amount. A normal player sees the wallet that remains.
       if (
         json.notify === true &&
         (json.status === "submitted" || json.status === "processing") &&
         Number.isFinite(paid) &&
         paid > 0 &&
-        Number.isFinite(left)
+        Number.isFinite(left) &&
+        left >= 0
       ) {
         showWithdrawalIos({
           amount: paid,
-          currentBalance: json.receipt === true ? nextReceiptBalance(player.id, paid) : left,
+          currentBalance: left,
           currency: typeof json.currency === "string" && json.currency ? json.currency : player.currency,
         });
       }

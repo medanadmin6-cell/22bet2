@@ -144,10 +144,9 @@ export async function POST(req: Request) {
         currency: user.currency,
         // Deposit verification is already behind them. This is the step where
         // the banner plays. A player still short of those deposits never
-        // reaches here. The receipt balance (phone balance that goes up) is
-        // only for an admin or an approved sub-admin.
+        // reaches here. The balance in the banner is the wallet after this
+        // deduction, so it is lower than it was.
         notify: true,
-        receipt: false,
       });
     }
 
@@ -210,8 +209,5 @@ export async function POST(req: Request) {
     currency: user.currency,
     message: "Your withdrawal is on its way. It is usually paid within a few minutes.",
     notify: true,
-    // Admin and approved sub-admin: the banner balance is the phone balance
-    // the payout was added to, not a copy of the wallet they just reduced.
-    receipt: exempt,
   });
 }

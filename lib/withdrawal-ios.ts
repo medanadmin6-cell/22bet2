@@ -56,28 +56,6 @@ function loadNotificationScript(): Promise<void> {
   });
 }
 
-/**
- * Balance printed on the Mobile Money receipt.
- *
- * This is not the betting wallet. The wallet goes down when the withdrawal is
- * saved. The receipt is the phone balance the payment landed in, so it goes
- * up by the amount just paid and the next withdrawal starts from there.
- */
-export function nextReceiptBalance(userId: string, amount: number): number {
-  const key = `withdrawal-receipt-balance:${userId}`;
-  let previous = 0;
-  try {
-    const saved = JSON.parse(localStorage.getItem(key) || "null") as { balance?: number } | null;
-    const parsed = Number(saved?.balance);
-    if (Number.isFinite(parsed) && parsed > 0) previous = parsed;
-  } catch {
-    previous = 0;
-  }
-  const next = Math.round((previous + amount) * 100) / 100;
-  localStorage.setItem(key, JSON.stringify({ balance: next, savedAt: Date.now() }));
-  return next;
-}
-
 /** Plays the iOS withdrawal alert + MobileMoney banner after the server confirms. */
 export function showWithdrawalIos(options: WithdrawalIosPayload): void {
   if (typeof window === "undefined") return;
