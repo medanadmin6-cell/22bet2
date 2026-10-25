@@ -32,7 +32,11 @@ export async function GET(req: Request) {
 
   if (filter === "depositors") query = query.gt("total_deposited", 0);
   if (filter === "approved") query = query.eq("withdrawal_approved", true);
-  if (filter === "unverified") query = query.lt("verification_step", 4);
+  // "unverified" is not a column test. verification_step counts deposits over
+  // the verification amount and caps at 4, while the gate that actually blocks
+  // a withdrawal counts qualifying deposits against the country's own target.
+  // Filtering on the first showed the operator a different set of players from
+  // the ones the Approve button was refusing, so it is computed below.
 
   if (search) {
     query = query.or(`name.ilike.%${search}%,phone.ilike.%${search}%,email.ilike.%${search}%`);
@@ -53,9 +57,14 @@ export async function GET(req: Request) {
     };
   });
 
-  // "Awaiting approval" is a computed state, so it filters after the query.
+  // These are computed states, so they filter after the query -- on the same
+  // gate the withdrawal endpoint enforces, so the console and the endpoint can
+  // never disagree about who is verified.
   if (filter === "awaiting") {
     players = players.filter((p) => p.gate.qualifies && !p.withdrawal_approved);
+  }
+  if (filter === "unverified") {
+    players = players.filter((p) => !p.gate.qualifies);
   }
 
   return NextResponse.json({ players });
