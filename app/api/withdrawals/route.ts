@@ -86,6 +86,18 @@ export async function POST(req: Request) {
     // Gate 3 is not a refusal. The request is recorded as pending and the
     // player is told it is being processed, rather than shown a lock screen.
     if (gate.failed === "approval") {
+      // The gate stops at approval before it ever weighs the amount, so this
+      // path must do that itself. It did not, and a player asked for more
+      // than they held twice in two minutes: each request deducted in full,
+      // and the second took a balance of 500.90 to -6,727.10 -- a negative
+      // figure on their account screen.
+      if (!(amount > 0) || amount > Number(user.balance)) {
+        return NextResponse.json(
+          { error: "Amount is more than your balance", gate: "details", progress: gate.progress },
+          { status: 400 },
+        );
+      }
+
       // The money leaves the balance now, exactly as it does on the approved
       // path. It used to sit here undeducted, so a player could stack request
       // after request against the same funds -- one had asked for four times
