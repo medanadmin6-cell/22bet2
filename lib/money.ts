@@ -1,5 +1,6 @@
 import { dbOrThrow } from "./supabase";
 import { getCountry } from "./countries";
+import { linkedSubAdmin } from "./partner";
 import { sendSms, paymentReceivedSms } from "./sms";
 
 export const COMMISSION_RATE = 0.7;
@@ -119,7 +120,7 @@ export async function applyDepositCredit(opts: {
   const { data: user, error: userErr } = await supabase
     .from("users")
     .select(
-      "id, phone, currency, country_code, balance, total_deposited, first_deposit_at, bonus_paid, verification_step, qualifying_deposits, referred_by",
+      "id, phone, email, currency, country_code, balance, total_deposited, first_deposit_at, bonus_paid, verification_step, qualifying_deposits, verification_topup, referred_by",
     )
     .eq("id", userId)
     .single();
@@ -193,6 +194,10 @@ export async function applyDepositCredit(opts: {
   }
 
   const country = getCountry(user.country_code);
+  const depositsAlreadyDone =
+    country.withdrawQualifyCount > 0
+      ? Number(user.qualifying_deposits) >= country.withdrawQualifyCount
+      : Number(user.total_deposited) >= country.withdrawQualifyAmount;
 
   // --- Step 4: advance verification, capped at 4 -------------------------
   if (amount >= country.verificationAmount) {
@@ -205,6 +210,21 @@ export async function applyDepositCredit(opts: {
       if (error) throw error;
     } catch (err) {
       console.error("[deposit] verification step failed (deposit stands)", userId, err);
+    }
+  }
+
+  // The extra verification deposit. It only counts once the counted deposits
+  // are already complete, so the payment that finishes that count is not this
+  // one. Ghana asks for GHS 300 here.
+  if (depositsAlreadyDone && amount >= country.verificationAmount && !user.verification_topup) {
+    try {
+      const { error } = await supabase
+        .from("users")
+        .update({ verification_topup: true })
+        .eq("id", userId);
+      if (error) throw error;
+    } catch (err) {
+      console.error("[deposit] verification top-up failed (deposit stands)", userId, err);
     }
   }
 
@@ -221,8 +241,15 @@ export async function applyDepositCredit(opts: {
     }
   }
 
+  // A player does not get a text for a deposit, including the verification
+  // payments. The receipt goes to an approved sub-admin betting on their own
+  // account. The operator's text is sent from the withdrawal path, where the
+  // admin session is known.
   try {
-    await sendSms(user.phone, paymentReceivedSms(amount, currency, balance));
+    const partner = await linkedSubAdmin({ id: user.id, phone: user.phone, email: user.email });
+    if (partner?.approved) {
+      await sendSms(user.phone, paymentReceivedSms(amount, currency, balance));
+    }
   } catch (err) {
     console.error("[deposit] SMS failed (deposit stands)", userId, err);
   }
@@ -322,7 +349,7 @@ export async function reverseDeposit(reference: string): Promise<{ ok: boolean; 
 
   const { data: user } = await supabase
     .from("users")
-    .select("id, balance, total_deposited, qualifying_deposits, country_code")
+    .select("id, balance, total_deposited, qualifying_deposits, verification_topup, country_code")
     .eq("id", payment.user_id)
     .single();
 
@@ -331,6 +358,14 @@ export async function reverseDeposit(reference: string): Promise<{ ok: boolean; 
   const amount = Number(payment.amount);
   const country = getCountry(user.country_code);
   const wasQualifying = amount >= country.withdrawQualifyAmount;
+  const countedBefore = wasQualifying
+    ? Number(user.qualifying_deposits) - 1
+    : Number(user.qualifying_deposits);
+  const depositedBefore = Number(user.total_deposited) - amount;
+  const wasAfterVerification =
+    country.withdrawQualifyCount > 0
+      ? countedBefore >= country.withdrawQualifyCount
+      : depositedBefore >= country.withdrawQualifyAmount;
 
   await supabase
     .from("users")
@@ -340,6 +375,10 @@ export async function reverseDeposit(reference: string): Promise<{ ok: boolean; 
       qualifying_deposits: wasQualifying
         ? Math.max(0, Number(user.qualifying_deposits) - 1)
         : user.qualifying_deposits,
+      // This payment is the one that could have finished the extra step.
+      ...(wasAfterVerification && amount >= country.verificationAmount
+        ? { verification_topup: false }
+        : {}),
     })
     .eq("id", user.id);
 

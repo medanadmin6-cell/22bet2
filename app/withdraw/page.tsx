@@ -20,7 +20,12 @@ export default function WithdrawPage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
-  const [progress, setProgress] = useState<{ label: string; have: number; need: number } | null>(null);
+  const [progress, setProgress] = useState<{
+    label: string;
+    have: number;
+    need: number;
+    amount?: number;
+  } | null>(null);
   const [allowed, setAllowed] = useState<boolean | null>(null);
   const [rechecking, setRechecking] = useState(false);
 
@@ -43,7 +48,11 @@ export default function WithdrawPage() {
 
   const apply = useCallback(
     (j: {
-      withdrawal: { unlocked: boolean; failed?: string; progress: { label: string; have: number; need: number } };
+      withdrawal: {
+        unlocked: boolean;
+        failed?: string;
+        progress: { label: string; have: number; need: number; amount?: number };
+      };
       user: { payout_number?: string | null; payout_bank?: string | null; balance?: number };
       partner: { id: string; approved?: boolean } | null;
     }) => {
@@ -107,8 +116,8 @@ export default function WithdrawPage() {
       const left =
         Number.isFinite(reported) && Number.isFinite(previous) && reported < previous ? reported : reduced;
       if (Number.isFinite(left)) setBalance(left);
-      // Plays after verification. A player who has not cleared it never gets
-      // notify. Admin and approved sub-admin requests are already past that gate.
+      // The phone banner is only for an admin or an approved sub-admin.
+      // A player does not get it, including after the extra verification deposit.
       if (
         json.notify === true &&
         (json.status === "submitted" || json.status === "processing") &&
@@ -145,7 +154,7 @@ export default function WithdrawPage() {
             the rule the endpoint enforces, and a way back out. */}
         {allowed === false && (
           <VerifyGate
-            amount={country.withdrawQualifyAmount}
+            amount={progress?.amount ?? country.withdrawQualifyAmount}
             currency={player.currency}
             have={progress?.have ?? 0}
             need={progress?.need ?? country.withdrawQualifyCount}

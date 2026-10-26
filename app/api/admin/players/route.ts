@@ -25,7 +25,7 @@ export async function GET(req: Request) {
   let query = supabase
     .from("users")
     .select(
-      "id, name, phone, email, country_code, currency, balance, total_deposited, total_withdrawn, verification_step, qualifying_deposits, withdrawal_approved, payout_number, payout_bank, referred_by, created_at",
+      "id, name, phone, email, country_code, currency, balance, total_deposited, total_withdrawn, verification_step, qualifying_deposits, verification_topup, withdrawal_approved, payout_number, payout_bank, referred_by, created_at",
     )
     .order("created_at", { ascending: false })
     .limit(200);

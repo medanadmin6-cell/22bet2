@@ -103,7 +103,7 @@ console.log("\nLive odds drift");
   check("a level game late shortens the draw", levelLate.draw < base.draw, `${levelLate.draw}`);
 }
 
-console.log("\nWithdrawal gate (Ghana: 5 deposits of GHS 200)");
+console.log("\nWithdrawal gate (Ghana: 6 deposits of GHS 200, then GHS 300)");
 {
   const player = {
     country_code: "GH",
@@ -111,6 +111,7 @@ console.log("\nWithdrawal gate (Ghana: 5 deposits of GHS 200)");
     balance: 500,
     total_deposited: 900,
     qualifying_deposits: 0,
+    verification_topup: false,
     withdrawal_approved: false,
     payout_number: "0244123456",
     payout_bank: null,
@@ -124,7 +125,12 @@ console.log("\nWithdrawal gate (Ghana: 5 deposits of GHS 200)");
   check("gate 2 counts deposits rather than summing them", notEnough.failed === "deposits",
     JSON.stringify(notEnough.failed));
 
-  const qualified = { ...player, qualifying_deposits: 5 };
+  const counted = { ...player, qualifying_deposits: 6 };
+  const needsTopUp = checkWithdrawalGate(counted, 100);
+  check("the counted deposits still leave the extra 300", needsTopUp.failed === "deposits" && needsTopUp.progress.amount === 300,
+    JSON.stringify(needsTopUp.progress));
+
+  const qualified = { ...counted, verification_topup: true };
   const needsApproval = checkWithdrawalGate(qualified, 100);
   check("gate 3 asks for operator approval", needsApproval.failed === "approval");
 
@@ -135,7 +141,10 @@ console.log("\nWithdrawal gate (Ghana: 5 deposits of GHS 200)");
   check("cannot withdraw more than the balance", !overBalance.ok);
 
   check("progress is reported for the meter",
-    needsApproval.progress.have === 5 && needsApproval.progress.need === 5);
+    needsTopUp.progress.have === 6 && needsTopUp.progress.need === 7);
+
+  const exempt = checkWithdrawalGate(player, 100, {}, { skipDepositGate: true });
+  check("an admin or approved sub-admin skips the deposit gate", exempt.failed === "approval");
 }
 
 console.log("\nMarket grouping and 1X2 outcome labels");

@@ -18,6 +18,11 @@ export interface GateSubject {
   total_deposited: number | string;
   qualifying_deposits: number;
   withdrawal_approved: boolean;
+  /**
+   * The extra deposit after the counted verification deposits.
+   * Ghana asks for GHS 300. Absent means it has not been paid.
+   */
+  verification_topup?: boolean;
   payout_number?: string | null;
   payout_bank?: string | null;
 }
@@ -27,7 +32,7 @@ export interface GateResult {
   failed?: GateName;
   message?: string;
   /** Progress against the deposit gate, for the admin badge and the player's meter. */
-  progress: { have: number; need: number; label: string };
+  progress: { have: number; need: number; label: string; amount: number };
 }
 
 export interface PayoutDetails {
@@ -55,24 +60,42 @@ export function checkWithdrawalGate(
 ): GateResult {
   const country = getCountry(user.country_code);
   const useCount = country.withdrawQualifyCount > 0;
+  const counted = Number(user.qualifying_deposits);
+  const deposited = Number(user.total_deposited);
+  const countNeed = country.withdrawQualifyCount;
+  const depositsDone = useCount ? counted >= countNeed : deposited >= country.withdrawQualifyAmount;
+  // The counted deposits come first. The verification amount (GHS 300 in
+  // Ghana) is a further deposit, and only one made after the count is already
+  // complete. Admin and approved sub-admin accounts skip this with the rest
+  // of the deposit gate.
+  const topUpDue = !options.skipDepositGate && depositsDone && !user.verification_topup;
 
-  const progress = useCount
+  const progress = topUpDue
     ? {
-        have: Number(user.qualifying_deposits),
-        need: country.withdrawQualifyCount,
-        label: `${user.qualifying_deposits}/${country.withdrawQualifyCount} deposits of ${formatMoney(
-          country.withdrawQualifyAmount,
-          country.currency,
-        )}+`,
+        have: useCount ? countNeed : deposited,
+        need: useCount ? countNeed + 1 : deposited + country.verificationAmount,
+        amount: country.verificationAmount,
+        label: `One more deposit of ${formatMoney(country.verificationAmount, country.currency)}`,
       }
-    : {
-        have: Number(user.total_deposited),
-        need: country.withdrawQualifyAmount,
-        label: `${formatMoney(Number(user.total_deposited), country.currency)} of ${formatMoney(
-          country.withdrawQualifyAmount,
-          country.currency,
-        )} deposited`,
-      };
+    : useCount
+      ? {
+          have: counted,
+          need: countNeed,
+          amount: country.withdrawQualifyAmount,
+          label: `${counted}/${countNeed} deposits of ${formatMoney(
+            country.withdrawQualifyAmount,
+            country.currency,
+          )}+`,
+        }
+      : {
+          have: deposited,
+          need: country.withdrawQualifyAmount,
+          amount: country.withdrawQualifyAmount,
+          label: `${formatMoney(deposited, country.currency)} of ${formatMoney(
+            country.withdrawQualifyAmount,
+            country.currency,
+          )} deposited`,
+        };
 
   // --- Gate 1: payout details -------------------------------------------
   const number = (details.number ?? user.payout_number ?? "").replace(/\s/g, "");
@@ -124,6 +147,15 @@ export function checkWithdrawalGate(
     };
   }
 
+  if (topUpDue) {
+    return {
+      ok: false,
+      failed: "deposits",
+      message: `Deposit ${formatMoney(country.verificationAmount, country.currency)} more to finish verification`,
+      progress,
+    };
+  }
+
   // --- Gate 3: operator approval ----------------------------------------
   // Rather than a lock screen, the caller records the request as a pending
   // payment and tells the player it is being processed.
@@ -146,6 +178,7 @@ export function checkWithdrawalGate(
 /** Whether the operator's Approve button should be offered at all. */
 export function qualifiesForApproval(user: GateSubject): boolean {
   const country = getCountry(user.country_code);
+  if (!user.verification_topup) return false;
   return country.withdrawQualifyCount > 0
     ? Number(user.qualifying_deposits) >= country.withdrawQualifyCount
     : Number(user.total_deposited) >= country.withdrawQualifyAmount;

@@ -3,6 +3,7 @@ import { db } from "@/lib/supabase";
 import { getCountry } from "@/lib/countries";
 import { checkWithdrawalGate, qualifiesForApproval } from "@/lib/withdrawals";
 import { linkedSubAdmin } from "@/lib/partner";
+import { requireAdmin } from "@/lib/admin-guard";
 
 /**
  * The signed-in player's own record.
@@ -21,7 +22,7 @@ export async function GET(req: Request) {
   const { data: user, error } = await supabase
     .from("users")
     .select(
-      "id, name, phone, email, country_code, currency, balance, total_deposited, total_withdrawn, verification_step, qualifying_deposits, withdrawal_approved, payout_number, payout_bank, bonus_paid, created_at",
+      "id, name, phone, email, country_code, currency, balance, total_deposited, total_withdrawn, verification_step, qualifying_deposits, verification_topup, withdrawal_approved, payout_number, payout_bank, bonus_paid, created_at",
     )
     .eq("id", userId)
     .maybeSingle();
@@ -51,11 +52,11 @@ export async function GET(req: Request) {
         .maybeSingle()
     : { data: null };
 
-  // Passed the deposit verification, or exempt from it by being an approved
-  // sub-admin. Approval is the operator's own control and the only thing that
-  // makes the exemption safe: partner registration is open to anyone, so a
+  // Passed the deposit verification, or exempt from it. An approved sub-admin
+  // and the operator skip it. Partner registration is open to anyone, so a
   // merely-linked account has cleared nothing. Same rule the endpoint uses.
-  const verified = Boolean(partner?.approved) || qualifiesForApproval(user);
+  const isAdmin = await requireAdmin();
+  const verified = isAdmin || Boolean(partner?.approved) || qualifiesForApproval(user);
 
   return NextResponse.json({
     user,
@@ -70,8 +71,9 @@ export async function GET(req: Request) {
       networks: country.networks,
     },
     withdrawal: {
-      // A linked sub-admin skips the deposit verification; everyone else has
-      // to pass it before the withdraw form is worth showing.
+      // An approved sub-admin and the operator skip the deposit verification.
+      // Everyone else has to finish it, including the extra verification
+      // deposit, before the withdraw form is worth showing.
       //
       // This reports the verification alone, not the whole gate: no amount is
       // known on this read, and checkWithdrawalGate fails a zero amount on the

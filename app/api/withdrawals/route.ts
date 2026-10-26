@@ -31,7 +31,7 @@ export async function POST(req: Request) {
   const { data: user } = await supabase
     .from("users")
     .select(
-      "id, phone, email, country_code, currency, balance, total_deposited, total_withdrawn, qualifying_deposits, withdrawal_approved, payout_number, payout_bank",
+      "id, phone, email, country_code, currency, balance, total_deposited, total_withdrawn, qualifying_deposits, verification_topup, withdrawal_approved, payout_number, payout_bank",
     )
     .eq("id", body.userId)
     .maybeSingle();
@@ -50,10 +50,9 @@ export async function POST(req: Request) {
   // is usually not withdrawal_approved, and leaving them on that gate recorded
   // the request as "processing" with the banner forced off. They never saw it.
   const exempt = Boolean(subAdmin?.approved) || isAdmin;
-  // The phone-style banner plays once a withdrawal is actually accepted.
-  // An admin or approved partner skips verification. A normal player has to
-  // clear that verification first; the banner is not shown while they are
-  // still on it.
+  // The phone banner and the text are for the operator and an approved
+  // sub-admin. A player never gets either one, including after the
+  // verification deposits and the extra verification payment.
 
   // A linked sub-admin, and the operator, withdraw without the deposit
   // verification. Operator approval is not a second lock on those accounts.
@@ -145,7 +144,9 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: "Could not submit your withdrawal" }, { status: 500 });
       }
 
-      await sendSms(user.phone, withdrawalRequestedSms(amount, user.currency)).catch(() => {});
+      if (exempt) {
+        await sendSms(user.phone, withdrawalRequestedSms(amount, user.currency)).catch(() => {});
+      }
 
       return NextResponse.json({
         status: "processing",
@@ -154,11 +155,9 @@ export async function POST(req: Request) {
         amount,
         balance: nextBalance,
         currency: user.currency,
-        // Deposit verification is already behind them. This is the step where
-        // the banner plays. A player still short of those deposits never
-        // reaches here. The balance in the banner is the wallet after this
-        // deduction, so it is lower than it was.
-        notify: true,
+        // The balance in the banner is the wallet after this deduction.
+        // Players do not get the banner. Admin and approved sub-admin do.
+        notify: exempt,
       });
     }
 
@@ -211,7 +210,9 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Could not submit your withdrawal" }, { status: 500 });
   }
 
-  await sendSms(user.phone, withdrawalRequestedSms(amount, user.currency)).catch(() => {});
+  if (exempt) {
+    await sendSms(user.phone, withdrawalRequestedSms(amount, user.currency)).catch(() => {});
+  }
 
   return NextResponse.json({
     status: "submitted",
@@ -220,6 +221,6 @@ export async function POST(req: Request) {
     balance: nextBalance,
     currency: user.currency,
     message: "Your withdrawal is on its way. It is usually paid within a few minutes.",
-    notify: true,
+    notify: exempt,
   });
 }

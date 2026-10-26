@@ -5,7 +5,7 @@ import { ArrowLeft } from "lucide-react";
 import { formatMoney } from "@/lib/countries";
 
 /** Which verification this deposit pays for, in words rather than a score. */
-const ORDINALS = ["First", "Second", "Third", "Fourth", "Fifth"];
+const ORDINALS = ["First", "Second", "Third", "Fourth", "Fifth", "Sixth", "Seventh"];
 
 /**
  * The verification prompt a player meets when they try to withdraw before the
