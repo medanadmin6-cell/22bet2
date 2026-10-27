@@ -44,12 +44,30 @@ export interface GateOptions {
   /**
    * Skip the deposit verification.
    *
-   * For a linked sub-admin, whose balance is commission already earned rather
-   * than winnings off a funded wallet, so there is no deposit history to ask
-   * for. Forcing `withdrawal_approved` does not cover this: that clears gate 3
-   * only, and the deposit gate is gate 2.
+   * For the operator and any linked sub-admin. There is no verification
+   * deposit to ask for. Forcing `withdrawal_approved` does not cover this:
+   * that clears gate 3 only, and the deposit gate is gate 2.
    */
   skipDepositGate?: boolean;
+}
+
+/**
+ * Who skips the deposit verification — the screen that asks a player to pay
+ * before withdrawing.
+ *
+ * The operator (a valid admin cookie) and any linked sub-admin skip it.
+ * The partner row does not have to be approved. An ordinary player, with
+ * neither an admin cookie nor a linked sub_admins row, does not.
+ *
+ * This does not clear the operator's sign-off (`withdrawal_approved`). That
+ * hold stays unless the caller lifts it for the operator or an approved
+ * sub-admin.
+ */
+export function skipsDepositVerification(input: {
+  isAdmin: boolean;
+  linkedSubAdmin: boolean;
+}): boolean {
+  return input.isAdmin || input.linkedSubAdmin;
 }
 
 export function checkWithdrawalGate(
@@ -66,7 +84,7 @@ export function checkWithdrawalGate(
   const depositsDone = useCount ? counted >= countNeed : deposited >= country.withdrawQualifyAmount;
   // The counted deposits come first. The verification amount (GHS 300 in
   // Ghana) is a further deposit, and only one made after the count is already
-  // complete. Admin and approved sub-admin accounts skip this with the rest
+  // complete. The operator and a linked sub-admin skip this with the rest
   // of the deposit gate.
   const topUpDue = !options.skipDepositGate && depositsDone && !user.verification_topup;
 

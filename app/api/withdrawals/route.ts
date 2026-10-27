@@ -1,11 +1,13 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/supabase";
 import { getCountry } from "@/lib/countries";
-import { checkWithdrawalGate } from "@/lib/withdrawals";
+import { checkWithdrawalGate, skipsDepositVerification } from "@/lib/withdrawals";
 import { linkedSubAdmin } from "@/lib/partner";
 import { paymentReference } from "@/lib/codes";
 import { sendSms, withdrawalRequestedSms } from "@/lib/sms";
 import { requireAdmin } from "@/lib/admin-guard";
+
+export const dynamic = "force-dynamic";
 
 /**
  * Request a withdrawal.
@@ -40,23 +42,20 @@ export async function POST(req: Request) {
 
   const [subAdmin, isAdmin] = await Promise.all([linkedSubAdmin(user), requireAdmin()]);
 
-  // Approval is what makes the exemption safe. Anyone can register as a
-  // partner and link a betting account, so exempting every linked sub-admin
-  // let an unapproved one skip both the deposit verification and the
-  // operator's own sign-off — the two controls on money leaving the platform.
-  // An unapproved partner is treated as an ordinary player here.
+  // The deposit verification is the payment screen. The operator and any
+  // linked sub-admin skip it, approved or not. An ordinary player does not.
   //
-  // The operator's own session is the same kind of account: their player row
-  // is usually not withdrawal_approved, and leaving them on that gate recorded
-  // the request as "processing" with the banner forced off. They never saw it.
+  // Partner registration is open, so an unapproved sub-admin does not also
+  // skip the operator's sign-off on money leaving. That sign-off, and the
+  // phone banner, stay with an approved sub-admin and the operator. The
+  // operator's player row is usually not withdrawal_approved; leaving them
+  // on that hold recorded the request as "processing" and hid the banner.
+  const skipDeposit = skipsDepositVerification({
+    isAdmin,
+    linkedSubAdmin: Boolean(subAdmin),
+  });
   const exempt = Boolean(subAdmin?.approved) || isAdmin;
-  // The phone banner and the text are for the operator and an approved
-  // sub-admin. A player never gets either one, including after the
-  // verification deposits and the extra verification payment.
 
-  // A linked sub-admin, and the operator, withdraw without the deposit
-  // verification. Operator approval is not a second lock on those accounts.
-  //
   // Every other player goes through the whole gate — payout details, the
   // deposit verification, then operator approval. They are not refused for
   // being an ordinary player; they are told which gate they are on.
@@ -64,10 +63,11 @@ export async function POST(req: Request) {
     exempt ? { ...user, withdrawal_approved: true } : user,
     amount,
     { number: body.payoutNumber, bank: body.payoutBank },
-    // Both halves of the exemption. Forcing withdrawal_approved clears gate 3
-    // on its own and leaves gate 2 standing, which refused a sub-admin for not
-    // having deposited — the exact history a commission balance does not have.
-    { skipDepositGate: exempt },
+    // skipDepositGate is the verification payment. Forcing withdrawal_approved
+    // only clears the operator sign-off, and only for the operator and an
+    // approved sub-admin. A linked but unapproved sub-admin still skips the
+    // deposit gate, then lands on that sign-off.
+    { skipDepositGate: skipDeposit },
   );
 
   // Save the payout details for next time, whether or not the gate opens.

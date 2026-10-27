@@ -39,7 +39,10 @@ export default function WithdrawPage() {
   const fetchMe = useCallback(async () => {
     if (!playerId) return null;
     try {
-      const res = await fetch(`/api/me?userId=${playerId}`);
+      const res = await fetch(`/api/me?userId=${playerId}`, {
+        credentials: "same-origin",
+        cache: "no-store",
+      });
       return res.ok ? await res.json() : null;
     } catch {
       return null;
@@ -56,9 +59,10 @@ export default function WithdrawPage() {
       user: { payout_number?: string | null; payout_bank?: string | null; balance?: number };
       partner: { id: string; approved?: boolean } | null;
     }) => {
-      // A sub-admin is exempt from the deposit verification; an ordinary
-      // player is allowed through once they have passed it. Being an ordinary
-      // player is not itself a refusal — the server says the same.
+      // The operator and any linked sub-admin skip the deposit verification.
+      // An ordinary player is allowed through once they have passed it.
+      // Being an ordinary player is not itself a refusal — the server says
+      // the same, and will still refuse a player who has not paid it.
       setAllowed(j.withdrawal.unlocked);
       setProgress(j.withdrawal.progress);
       setPayoutNumber((n) => n || j.user.payout_number || player?.phone || "");
@@ -175,7 +179,9 @@ export default function WithdrawPage() {
           <p className="text-[26px] font-black text-[var(--accent)]">
             {formatMoney(Number(player.balance), player.currency)}
           </p>
-          {progress && <p className="mt-1 text-[11px] text-[var(--text-muted)]">{progress.label}</p>}
+          {progress?.label ? (
+            <p className="mt-1 text-[11px] text-[var(--text-muted)]">{progress.label}</p>
+          ) : null}
         </div>
         )}
 

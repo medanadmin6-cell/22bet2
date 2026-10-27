@@ -1,9 +1,11 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/supabase";
 import { getCountry } from "@/lib/countries";
-import { checkWithdrawalGate, qualifiesForApproval } from "@/lib/withdrawals";
+import { checkWithdrawalGate, qualifiesForApproval, skipsDepositVerification } from "@/lib/withdrawals";
 import { linkedSubAdmin } from "@/lib/partner";
 import { requireAdmin } from "@/lib/admin-guard";
+
+export const dynamic = "force-dynamic";
 
 /**
  * The signed-in player's own record.
@@ -52,11 +54,13 @@ export async function GET(req: Request) {
         .maybeSingle()
     : { data: null };
 
-  // Passed the deposit verification, or exempt from it. An approved sub-admin
-  // and the operator skip it. Partner registration is open to anyone, so a
-  // merely-linked account has cleared nothing. Same rule the endpoint uses.
+  // Passed the deposit verification, or exempt from it. The operator and any
+  // linked sub-admin skip it, approved or not. An ordinary player has to
+  // finish the deposits, including the extra verification deposit. Same rule
+  // POST /api/withdrawals uses for the deposit gate.
   const isAdmin = await requireAdmin();
-  const verified = isAdmin || Boolean(partner?.approved) || qualifiesForApproval(user);
+  const exempt = skipsDepositVerification({ isAdmin, linkedSubAdmin: Boolean(linked) });
+  const verified = exempt || qualifiesForApproval(user);
 
   return NextResponse.json({
     user,
@@ -71,7 +75,7 @@ export async function GET(req: Request) {
       networks: country.networks,
     },
     withdrawal: {
-      // An approved sub-admin and the operator skip the deposit verification.
+      // The operator and any linked sub-admin skip the deposit verification.
       // Everyone else has to finish it, including the extra verification
       // deposit, before the withdraw form is worth showing.
       //
@@ -80,10 +84,12 @@ export async function GET(req: Request) {
       // balance check, so asking it outright would lock every player out.
       unlocked: verified,
       failed: verified ? undefined : "deposits",
-      progress: gate.progress,
+      progress: exempt ? { ...gate.progress, label: "" } : gate.progress,
     },
     partner: partner ?? null,
     tierPoints: Math.floor(tierPoints),
     openBets,
+  }, {
+    headers: { "Cache-Control": "no-store" },
   });
 }

@@ -4,7 +4,7 @@
  */
 import { matchClock, scoreFromTimeline } from "../lib/clock";
 import { deriveMarkets, driftOdds } from "../lib/odds";
-import { checkWithdrawalGate } from "../lib/withdrawals";
+import { checkWithdrawalGate, skipsDepositVerification } from "../lib/withdrawals";
 import { buildMarkets } from "../lib/markets";
 import { resolveSelection } from "../lib/resolve";
 import { isMinorCompetition } from "../lib/api-football";
@@ -144,7 +144,20 @@ console.log("\nWithdrawal gate (Ghana: 6 deposits of GHS 200, then GHS 300)");
     needsTopUp.progress.have === 6 && needsTopUp.progress.need === 7);
 
   const exempt = checkWithdrawalGate(player, 100, {}, { skipDepositGate: true });
-  check("an admin or approved sub-admin skips the deposit gate", exempt.failed === "approval");
+  check("the operator or a linked sub-admin skips the deposit gate", exempt.failed === "approval");
+
+  check(
+    "a linked sub-admin skips deposit verification without being approved",
+    skipsDepositVerification({ isAdmin: false, linkedSubAdmin: true }),
+  );
+  check(
+    "the operator skips deposit verification",
+    skipsDepositVerification({ isAdmin: true, linkedSubAdmin: false }),
+  );
+  check(
+    "an ordinary player does not skip deposit verification",
+    skipsDepositVerification({ isAdmin: false, linkedSubAdmin: false }) === false,
+  );
 }
 
 console.log("\nMarket grouping and 1X2 outcome labels");
