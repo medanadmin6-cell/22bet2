@@ -607,7 +607,7 @@ const theteller: GatewayAdapter = {
 
 const PYCUE_BASE = "https://pycue.com/api/v1";
 
-/** MTN / TELECEL / AIRTELTIGO, the vocabulary both Pycue and AkwaPay use.
+/** MTN / TELECEL / AIRTELTIGO, the vocabulary Pycue uses.
  *  TELECEL is what Vodafone Cash became. */
 function momoNetwork(label: string | undefined, phone: string): "MTN" | "TELECEL" | "AIRTELTIGO" {
   const network = resolveNetwork(label, phone);
@@ -730,119 +730,137 @@ const pycue: GatewayAdapter = {
   },
 };
 
-// ----------------------------------------------------------------- AkwaPay
+// ---------------------------------------------------------------- AlphaPay
 
-const AKWAPAY_BASE = "https://akwapayapi.onrender.com/v1";
+const ALPHAPAY_BASE = "https://api.edibytes.online/api";
 
 /**
- * AkwaPay: Ghana mobile money, two endpoints and nothing else.
- *
- * Amounts are integer pesewas in both directions, which is the opposite of
- * theTeller and the one thing here that would cost real money to get wrong.
- * GHS 1.00 is sent as 100 and reads back as 102 — they add 2% on top, so the
- * figure on the intent is the customer's debit, not what was asked for.
- * settledAmount caps at the request, so the fee cannot inflate a credit.
- *
- * Idempotency-Key carries our reference, so a retried start returns the
- * original intent rather than prompting twice.
+ * The domain a collection is declared for. AlphaPay refuses any that is not
+ * already whitelisted on the account, so a deployment names its own rather
+ * than trusting whatever host a request happened to arrive on -- a preview
+ * URL would otherwise be sent, and refused.
  */
-const akwapay: GatewayAdapter = {
-  id: "akwapay",
+function alphapayDomain(redirectUrl: string): string {
+  const fixed = env("ALPHAPAY_DOMAIN");
+  if (fixed) return fixed.replace(/^https?:\/\//i, "").replace(/\/.*$/, "");
+  return new URL(redirectUrl).hostname;
+}
+
+/**
+ * AlphaPay: Ghana mobile money.
+ *
+ * Three things in their documentation shape this adapter:
+ *
+ *   - Amounts are cedis, not pesewas, in both directions: 50.00 is GH₵50.
+ *   - Nothing is charged at the start. The call texts the customer a code and
+ *     answers with a checkout_url on AlphaPay's side, where the code is typed
+ *     and the charge is then approved on the handset. So a start normally ends
+ *     in a redirect; only a merchant with OTP switched off gets a prompt
+ *     straight away and no URL.
+ *   - Our own reference is theirs too. Every later question is asked with it,
+ *     so there is no id of theirs that has to survive on the payment row.
+ *
+ * callback_url is where the customer is sent back and where the signed webhook
+ * lands, both on /api/deposits/alphapay. Delivery is best-effort with no
+ * retries, which is why the status call below stays the thing that credits.
+ */
+const alphapay: GatewayAdapter = {
+  id: "alphapay",
   label: "Mobile Money",
-  async start({ reference, amount, phone, network }) {
-    const key = env("AKWAPAY_SECRET_KEY");
+  async start({ reference, amount, currency, phone, redirectUrl }) {
+    const key = env("ALPHAPAY_SECRET_KEY");
     if (!key) return { ok: false, error: "Mobile money is not available right now" };
 
+    const origin = new URL(redirectUrl).origin;
+
     try {
-      const res = await fetch(`${AKWAPAY_BASE}/payment_intents`, {
+      const res = await fetch(`${ALPHAPAY_BASE}/payments/initialize/`, {
         method: "POST",
-        headers: {
-          Authorization: `Bearer ${key}`,
-          "Content-Type": "application/json",
-          "Idempotency-Key": reference,
-        },
+        headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
         body: JSON.stringify({
-          // Integer pesewas. A decimal here is silently taken as pesewas too,
-          // so rounding is done on our side rather than trusting theirs.
-          amount: Math.round(amount * 100),
-          currency: "GHS",
-          method: "mobile_money",
-          network: momoNetwork(network, phone),
-          customer: { phone: localGhanaNumber(phone) },
+          // Cedis, two places. Not a minor unit.
+          amount: Math.round(amount * 100) / 100,
+          currency,
           reference,
+          domain: alphapayDomain(redirectUrl),
+          phone_number: localGhanaNumber(phone),
+          callback_url: `${origin}/api/deposits/alphapay?reference=${encodeURIComponent(reference)}`,
         }),
         signal: AbortSignal.timeout(25_000),
       });
 
       const json = (await res.json().catch(() => null)) as Record<string, unknown> | null;
-      const id = json?.id ? String(json.id) : null;
 
-      if (res.ok && id) {
-        return { ok: true, metadata: { akwapayIntentId: id }, awaitingPrompt: true };
+      if (res.ok) {
+        const id = json?.id ? String(json.id) : null;
+        const metadata = id ? { alphapayId: id } : undefined;
+        const checkoutUrl = typeof json?.checkout_url === "string" ? json.checkout_url : undefined;
+        // With a URL the customer has a code to enter there. Without one the
+        // prompt is already on the handset and the poll takes over.
+        return checkoutUrl
+          ? { ok: true, metadata, redirectUrl: checkoutUrl }
+          : { ok: true, metadata, awaitingPrompt: true };
       }
 
       const error = (json?.error ?? {}) as Record<string, unknown>;
-      const code = String(error.code ?? "");
-      console.error("[akwapay] intent refused", { reference, status: res.status, code, message: error.message });
+      console.error("[alphapay] initialize refused", {
+        reference,
+        status: res.status,
+        type: error.type,
+        message: error.message,
+      });
 
-      // They rate-limit a number that has been pushed at too often, and say
-      // when it frees up. A player retrying harder only extends it.
-      if (code === "number_blocked") {
-        return {
-          ok: false,
-          error: "Too many payment attempts on that number. Wait a few minutes, then try again.",
-        };
-      }
-      if (code === "malformed" || res.status === 401 || res.status === 403) {
+      // 401 is the key and 403 is a domain that is not whitelisted. Both are
+      // the operator's to fix, not something a player can act on.
+      if (res.status === 401 || res.status === 403) {
         return { ok: false, error: "Deposits are being set up. Please try again shortly." };
       }
-      if (code === "invalid_network") {
-        return { ok: false, error: "That number is not on a supported mobile money network." };
+      if (res.status >= 500) {
+        return { ok: false, error: "The payment service is busy. Please try again in a minute." };
       }
       return {
         ok: false,
-        error: "That payment was declined. Check there is enough money in that mobile money wallet, then try again.",
+        error: "That payment could not be started. Check the mobile money number, then try again.",
       };
     } catch (err) {
-      // The prompt may already be out, so this goes to the poll rather than
-      // being called a failure.
-      console.error("[akwapay] intent did not answer", { reference, err });
+      // No answer is not a refusal: with OTP switched off the prompt may
+      // already be out, so this goes to the poll rather than being called a
+      // failure.
+      console.error("[alphapay] initialize did not answer", { reference, err });
       return { ok: true, awaitingPrompt: true };
     }
   },
 
-  async status(reference, meta) {
-    const key = env("AKWAPAY_SECRET_KEY");
-    const id = meta?.akwapayIntentId;
-    if (!key || !id) return { status: "pending" };
+  async status(reference) {
+    const key = env("ALPHAPAY_SECRET_KEY");
+    if (!key) return { status: "pending" };
 
     try {
-      const res = await fetch(`${AKWAPAY_BASE}/payment_intents/${encodeURIComponent(String(id))}`, {
+      const res = await fetch(`${ALPHAPAY_BASE}/payments/verify/${encodeURIComponent(reference)}/`, {
         headers: { Authorization: `Bearer ${key}` },
         cache: "no-store",
         signal: AbortSignal.timeout(15_000),
       });
+      // Not filed yet, or their side having a moment, is not a refusal.
       if (!res.ok) return { status: "pending" };
 
       const json = (await res.json().catch(() => null)) as Record<string, unknown> | null;
       const state = String(json?.status ?? "").toLowerCase();
 
-      if (state === "succeeded" || state === "success") {
-        // Pesewas back to cedis. Carries their 2% on top of what was asked
-        // for, which settledAmount then caps at the request.
-        const minor = Number(json?.amount);
+      if (state === "success") {
+        const paid = Number(json?.amount);
         return {
           status: "confirmed",
-          paidAmount: Number.isFinite(minor) && minor > 0 ? minor / 100 : undefined,
+          paidAmount: Number.isFinite(paid) && paid > 0 ? paid : undefined,
           paidCurrency: typeof json?.currency === "string" ? json.currency : undefined,
         };
       }
-      if (["failed", "canceled", "cancelled", "expired"].includes(state)) return { status: "failed" };
+      if (state === "failed") return { status: "failed" };
 
-      // requires_action is the prompt sitting on the handset. Anything we do
-      // not recognise is left pending rather than read as a refusal.
-      if (state && !["requires_action", "processing", "pending"].includes(state)) {
-        console.warn("[akwapay] unmapped status", { reference, id, state });
+      // pending and otp_required are both "keep asking". Anything we do not
+      // recognise is left pending rather than read as a refusal.
+      if (state && !["pending", "otp_required"].includes(state)) {
+        console.warn("[alphapay] unmapped status", { reference, state });
       }
       return { status: "pending" };
     } catch {
@@ -868,7 +886,7 @@ const ADAPTERS: Record<Gateway, GatewayAdapter> = {
   webrabbit,
   theteller,
   pycue,
-  akwapay,
+  alphapay,
   manual,
 };
 

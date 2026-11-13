@@ -39,7 +39,7 @@ function HeaderActions({ onOpenAccount }: { onOpenAccount: () => void }) {
     let alive = true;
     const tick = async () => {
       // A mobile money prompt is often approved after the player has left the
-      // deposit screen, and AkwaPay sends no webhook -- so until now that
+      // deposit screen, and AlphaPay's webhook is best-effort -- so until now that
       // money showed up nowhere (not the player's balance, not the partner's
       // commission) before the account screen or the nightly sweep. Sweeping
       // from the poll credits it the next time the player so much as looks at
