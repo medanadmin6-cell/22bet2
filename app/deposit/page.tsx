@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { useSession } from "@/lib/store";
 import { getCountry, formatMoney, localSignificant } from "@/lib/countries";
+import { alphapaySessionUrl } from "@/lib/alphapay-url";
 
 type Rail = "momo" | "manual";
 
@@ -87,6 +88,16 @@ export default function DepositPage() {
       const json = await res.json();
       if (!res.ok) {
         setError(json.error ?? "Could not start your deposit");
+        return;
+      }
+
+      if (json.provider === "alphapay") {
+        const sessionUrl = alphapaySessionUrl(json.redirectUrl);
+        if (!sessionUrl) {
+          setError("Could not open the payment page");
+          return;
+        }
+        window.location.href = sessionUrl;
         return;
       }
 

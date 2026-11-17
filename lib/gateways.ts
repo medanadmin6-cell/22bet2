@@ -1,3 +1,4 @@
+import { alphapaySessionUrl } from "./alphapay-url";
 import type { Gateway } from "./countries";
 import {
   cardsConfigured,
@@ -732,140 +733,180 @@ const pycue: GatewayAdapter = {
 
 // ---------------------------------------------------------------- AlphaPay
 
-const ALPHAPAY_BASE = "https://api.edibytes.online/api";
-
 /**
- * The domain a collection is declared for. AlphaPay refuses any that is not
- * already whitelisted on the account, so a deployment names its own rather
- * than trusting whatever host a request happened to arrive on -- a preview
- * URL would otherwise be sent, and refused.
+ * AlphaPay (https://docs.alphapay.me), the same hosted checkout Betzone uses.
+ *
+ * A deposit opens a checkout session. The player picks the mobile-money
+ * network on AlphaPay's page. Nothing is credited until that session is PAID.
+ * sk_test_ keys use the sandbox host; sk_live_ keys use the live host.
  */
-function alphapayDomain(redirectUrl: string): string {
-  const fixed = env("ALPHAPAY_DOMAIN");
-  if (fixed) return fixed.replace(/^https?:\/\//i, "").replace(/\/.*$/, "");
-  return new URL(redirectUrl).hostname;
+function alphapayApiBase(): string {
+  const forced = env("ALPHAPAY_API_BASE");
+  if (forced) return forced.replace(/\/+$/, "");
+  const key = env("ALPHAPAY_SECRET_KEY") ?? "";
+  return key.startsWith("sk_test_")
+    ? "https://sandbox-api.alphapay.me/api/v1"
+    : "https://api.alphapay.me/api/v1";
 }
 
-/**
- * AlphaPay: Ghana mobile money.
- *
- * Three things in their documentation shape this adapter:
- *
- *   - Amounts are cedis, not pesewas, in both directions: 50.00 is GH₵50.
- *   - Nothing is charged at the start. The call texts the customer a code and
- *     answers with a checkout_url on AlphaPay's side, where the code is typed
- *     and the charge is then approved on the handset. So a start normally ends
- *     in a redirect; only a merchant with OTP switched off gets a prompt
- *     straight away and no URL.
- *   - Our own reference is theirs too. Every later question is asked with it,
- *     so there is no id of theirs that has to survive on the payment row.
- *
- * callback_url is where the customer is sent back and where the signed webhook
- * lands, both on /api/deposits/alphapay. Delivery is best-effort with no
- * retries, which is why the status call below stays the thing that credits.
- */
+/** AlphaPay takes a Ghana number the way it is dialled locally: 0241234567. */
+function alphapayPhone(phone: string, currency: string): string {
+  const digits = phone.replace(/\D/g, "");
+  if (String(currency).toUpperCase() === "GHS" && digits.length >= 9) {
+    return `0${digits.slice(-9)}`;
+  }
+  return digits;
+}
+
+function pushAlphapayText(parts: string[], value: unknown) {
+  if (typeof value === "string" && value.trim()) parts.push(value.trim());
+  else if (Array.isArray(value)) {
+    for (const item of value) {
+      if (typeof item === "string" && item.trim()) parts.push(item.trim());
+    }
+  }
+}
+
+/** Drop anything that could be a secret before a message is shown to a player. */
+function publicAlphapayMessage(raw: string): string {
+  const stripped = raw
+    .replace(/sk_(?:live|test)_[A-Za-z0-9_-]+/gi, "")
+    .replace(/bearer\s+\S+/gi, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!stripped) return "AlphaPay rejected this checkout";
+  return stripped.slice(0, 240);
+}
+
+function alphapayErrorMessage(json: unknown, status: number): string {
+  const fallback = status ? `AlphaPay rejected this checkout (HTTP ${status})` : "Could not start checkout";
+  if (!json || typeof json !== "object") return fallback;
+  const body = json as Record<string, unknown>;
+  const parts: string[] = [];
+  const err = body.error;
+  if (typeof err === "string") pushAlphapayText(parts, err);
+  else if (err && typeof err === "object") {
+    const record = err as Record<string, unknown>;
+    pushAlphapayText(parts, record.message);
+    pushAlphapayText(parts, record.detail);
+    for (const [field, value] of Object.entries(record)) {
+      if (field === "message" || field === "code" || field === "detail") continue;
+      if (typeof value === "string" && value.trim()) parts.push(`${field}: ${value.trim()}`);
+      else if (Array.isArray(value)) {
+        const texts = value.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+        if (texts.length) parts.push(`${field}: ${texts.join(" ")}`);
+      }
+    }
+  }
+  pushAlphapayText(parts, body.message);
+  if (typeof body.detail === "string") pushAlphapayText(parts, body.detail);
+  const joined = [...new Set(parts)].join(" ");
+  return joined ? publicAlphapayMessage(joined) : fallback;
+}
+
+async function alphapayRequest(
+  path: string,
+  init?: RequestInit,
+): Promise<{ ok: true; data: Record<string, unknown> } | { ok: false; error: string }> {
+  const key = env("ALPHAPAY_SECRET_KEY");
+  if (!key) return { ok: false, error: "Mobile money is not available right now" };
+  try {
+    const res = await fetch(`${alphapayApiBase()}${path}`, {
+      ...init,
+      headers: {
+        Authorization: `Bearer ${key}`,
+        Accept: "application/json",
+        ...(init?.body ? { "Content-Type": "application/json" } : {}),
+      },
+      cache: "no-store",
+      signal: AbortSignal.timeout(25_000),
+    });
+    const json = (await res.json().catch(() => null)) as Record<string, unknown> | null;
+    const data = ((json && typeof json === "object" && "data" in json ? json.data : json) ??
+      {}) as Record<string, unknown>;
+    if (!res.ok || json?.success === false) {
+      const message = alphapayErrorMessage(json, res.status);
+      console.error("[alphapay]", path, res.status, message);
+      return { ok: false, error: message };
+    }
+    return { ok: true, data };
+  } catch (err) {
+    console.error("[alphapay]", path, err);
+    return { ok: false, error: "Could not reach AlphaPay. Try again." };
+  }
+}
+
 const alphapay: GatewayAdapter = {
   id: "alphapay",
   label: "Mobile Money",
-  async start({ reference, amount, currency, phone, redirectUrl }) {
-    const key = env("ALPHAPAY_SECRET_KEY");
-    if (!key) return { ok: false, error: "Mobile money is not available right now" };
-
-    const origin = new URL(redirectUrl).origin;
-
+  async start({ reference, amount, currency, phone, email, name, redirectUrl }) {
+    let origin: string;
     try {
-      const res = await fetch(`${ALPHAPAY_BASE}/payments/initialize/`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-        body: JSON.stringify({
-          // Cedis, two places. Not a minor unit.
-          amount: Math.round(amount * 100) / 100,
-          currency,
-          reference,
-          domain: alphapayDomain(redirectUrl),
-          phone_number: localGhanaNumber(phone),
-          callback_url: `${origin}/api/deposits/alphapay?reference=${encodeURIComponent(reference)}`,
-        }),
-        signal: AbortSignal.timeout(25_000),
-      });
-
-      const json = (await res.json().catch(() => null)) as Record<string, unknown> | null;
-
-      if (res.ok) {
-        const id = json?.id ? String(json.id) : null;
-        const metadata = id ? { alphapayId: id } : undefined;
-        const checkoutUrl = typeof json?.checkout_url === "string" ? json.checkout_url : undefined;
-        // With a URL the customer has a code to enter there. Without one the
-        // prompt is already on the handset and the poll takes over.
-        return checkoutUrl
-          ? { ok: true, metadata, redirectUrl: checkoutUrl }
-          : { ok: true, metadata, awaitingPrompt: true };
-      }
-
-      const error = (json?.error ?? {}) as Record<string, unknown>;
-      console.error("[alphapay] initialize refused", {
-        reference,
-        status: res.status,
-        type: error.type,
-        message: error.message,
-      });
-
-      // 401 is the key and 403 is a domain that is not whitelisted. Both are
-      // the operator's to fix, not something a player can act on.
-      if (res.status === 401 || res.status === 403) {
-        return { ok: false, error: "Deposits are being set up. Please try again shortly." };
-      }
-      if (res.status >= 500) {
-        return { ok: false, error: "The payment service is busy. Please try again in a minute." };
-      }
-      return {
-        ok: false,
-        error: "That payment could not be started. Check the mobile money number, then try again.",
-      };
-    } catch (err) {
-      // No answer is not a refusal: with OTP switched off the prompt may
-      // already be out, so this goes to the poll rather than being called a
-      // failure.
-      console.error("[alphapay] initialize did not answer", { reference, err });
-      return { ok: true, awaitingPrompt: true };
+      origin = new URL(redirectUrl).origin;
+    } catch {
+      return { ok: false, error: "Mobile money is not available right now" };
     }
+
+    const country =
+      currency.toUpperCase() === "GHS" ? "GH" : currency.toUpperCase() === "NGN" ? "NG" : undefined;
+    const host = new URL(origin).hostname;
+    const created = await alphapayRequest("/checkout-sessions/", {
+      method: "POST",
+      body: JSON.stringify({
+        amount: amount.toFixed(2),
+        currency: currency.toUpperCase(),
+        description: `Deposit ${reference}`,
+        ...(country ? { country } : {}),
+        customer_email: email || `deposit+${reference.toLowerCase()}@${host}`,
+        customer_name: name || "Player",
+        customer_phone: alphapayPhone(phone, currency),
+        return_url: redirectUrl,
+        metadata: { reference },
+      }),
+    });
+    if (!created.ok) return { ok: false, error: created.error };
+
+    const checkout = alphapaySessionUrl(created.data.checkout_url);
+    if (!checkout) return { ok: false, error: "Could not open the payment page" };
+
+    const id = created.data.id == null ? undefined : String(created.data.id);
+    return {
+      ok: true,
+      redirectUrl: checkout,
+      metadata: {
+        alphapay_session_id: id,
+        alphapay_id: id,
+        checkout_url: checkout,
+      },
+    };
   },
 
-  async status(reference) {
-    const key = env("ALPHAPAY_SECRET_KEY");
-    if (!key) return { status: "pending" };
+  async status(reference, meta) {
+    const id = typeof meta?.alphapay_session_id === "string" ? meta.alphapay_session_id : "";
+    if (!id) return { status: "pending" };
 
-    try {
-      const res = await fetch(`${ALPHAPAY_BASE}/payments/verify/${encodeURIComponent(reference)}/`, {
-        headers: { Authorization: `Bearer ${key}` },
-        cache: "no-store",
-        signal: AbortSignal.timeout(15_000),
-      });
-      // Not filed yet, or their side having a moment, is not a refusal.
-      if (!res.ok) return { status: "pending" };
+    const found = await alphapayRequest(`/checkout-sessions/${encodeURIComponent(id)}/status/`);
+    if (!found.ok) return { status: "pending" };
 
-      const json = (await res.json().catch(() => null)) as Record<string, unknown> | null;
-      const state = String(json?.status ?? "").toLowerCase();
-
-      if (state === "success") {
-        const paid = Number(json?.amount);
-        return {
-          status: "confirmed",
-          paidAmount: Number.isFinite(paid) && paid > 0 ? paid : undefined,
-          paidCurrency: typeof json?.currency === "string" ? json.currency : undefined,
-        };
-      }
-      if (state === "failed") return { status: "failed" };
-
-      // pending and otp_required are both "keep asking". Anything we do not
-      // recognise is left pending rather than read as a refusal.
-      if (state && !["pending", "otp_required"].includes(state)) {
-        console.warn("[alphapay] unmapped status", { reference, state });
-      }
-      return { status: "pending" };
-    } catch {
-      return { status: "pending" };
+    const session = String(found.data.status ?? "").toUpperCase();
+    const transaction = String(found.data.transaction_status ?? "").toUpperCase();
+    const status: ChargeStatus =
+      session === "PAID" || transaction === "SUCCESS"
+        ? "confirmed"
+        : ["CANCELLED", "CANCELED", "EXPIRED", "FAILED"].includes(session) ||
+            transaction === "FAILED" ||
+            transaction === "CANCELLED"
+          ? "failed"
+          : "pending";
+    if (status === "pending" && session && !["PENDING", "PROCESSING"].includes(session)) {
+      console.warn("[alphapay] unmapped status", { reference, id, session, transaction });
     }
+    const raw = Number(found.data.amount);
+    return {
+      status,
+      paidAmount: Number.isFinite(raw) && raw > 0 ? raw : undefined,
+      paidCurrency: typeof found.data.currency === "string" ? found.data.currency : undefined,
+    };
   },
 };
 

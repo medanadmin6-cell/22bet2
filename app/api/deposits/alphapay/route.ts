@@ -28,19 +28,28 @@ export async function GET(req: Request) {
 export async function POST(req: Request) {
   const raw = await req.text();
 
-  if (!signed(req.headers.get("x-alphapay-signature"), raw)) {
+  if (
+    !signed(
+      raw,
+      req.headers.get("x-webhook-signature") ?? req.headers.get("x-alphapay-signature"),
+      req.headers.get("x-webhook-timestamp"),
+    )
+  ) {
     console.warn("[alphapay] rejected a webhook with a bad signature");
     return NextResponse.json({ ok: false }, { status: 401 });
   }
 
-  let event: { event?: string; data?: { reference?: unknown } };
+  let event: { data?: { reference?: unknown; metadata?: { reference?: unknown } } };
   try {
     event = JSON.parse(raw);
   } catch {
     return NextResponse.json({ ok: false }, { status: 400 });
   }
 
-  const reference = typeof event.data?.reference === "string" ? event.data.reference : null;
+  const nested = event.data?.metadata?.reference;
+  const reference =
+    (typeof nested === "string" && nested) ||
+    (typeof event.data?.reference === "string" ? event.data.reference : "");
   if (!reference) return NextResponse.json({ ok: true, ignored: true });
 
   await settle(reference);
@@ -48,26 +57,22 @@ export async function POST(req: Request) {
 }
 
 /**
- * HMAC-SHA256 over the raw body, keyed with our secret key. Their docs do not
- * say how the digest is written out, so both spellings a signature usually
- * takes are accepted; either one can only be produced with the key.
+ * AlphaPay signs `${timestamp}.${raw body}` with the webhook secret.
+ * X-Webhook-Signature is the lowercase hex digest. A stamp older than five
+ * minutes is rejected, the same window Betzone uses.
  */
-function signed(header: string | null, raw: string): boolean {
-  const key = process.env.ALPHAPAY_SECRET_KEY;
+function signed(raw: string, header: string | null, timestamp: string | null): boolean {
+  const key = process.env.ALPHAPAY_WEBHOOK_SECRET || process.env.ALPHAPAY_SECRET_KEY;
   if (!key || !header) return false;
-
-  const got = Buffer.from(header.trim().replace(/^sha256=/i, ""));
-  const mac = createHmac("sha256", key).update(raw).digest();
-
-  return [mac.toString("hex"), mac.toString("base64")].some((expected) => {
-    const want = Buffer.from(expected);
-    // Hex is case-insensitive; base64 is not, and is compared as sent.
-    const lowered = Buffer.from(got.toString().toLowerCase());
-    return (
-      (want.length === got.length && timingSafeEqual(want, got)) ||
-      (want.length === lowered.length && timingSafeEqual(want, lowered))
-    );
-  });
+  if (timestamp) {
+    const age = Math.abs(Math.floor(Date.now() / 1000) - Number(timestamp));
+    if (!Number.isFinite(age) || age > 300) return false;
+  }
+  const signedBody = timestamp ? `${timestamp}.${raw}` : raw;
+  const expected = createHmac("sha256", key).update(signedBody).digest("hex");
+  const given = Buffer.from(header.trim().toLowerCase().replace(/^sha256=/, ""));
+  const want = Buffer.from(expected);
+  return given.length === want.length && timingSafeEqual(given, want);
 }
 
 /**
@@ -88,7 +93,10 @@ async function settle(reference: string): Promise<void> {
   if (!payment || payment.provider !== "alphapay" || payment.status !== "pending") return;
 
   try {
-    const outcome = await adapterFor("alphapay").status(reference);
+    const outcome = await adapterFor("alphapay").status(
+      reference,
+      (payment.metadata ?? undefined) as Record<string, unknown> | undefined,
+    );
 
     if (outcome.status === "confirmed") {
       await applyDepositCredit({
