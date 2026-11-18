@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useAdminData, adminAction, Panel, Table, Badge, Button, money } from "@/components/admin/ui";
 
 interface Partner {
@@ -20,8 +20,29 @@ interface Partner {
 }
 
 export default function SubAdminsPage() {
-  const { data, error, reload, busy } = useAdminData<{ partners: Partner[] }>("/api/admin/sub-admins");
+  const [page, setPage] = useState(1);
+  const [query, setQuery] = useState("");
+  const [term, setTerm] = useState("");
+  const pending = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const { data, error, reload, busy } = useAdminData<{
+    partners: Partner[];
+    page: number;
+    pages: number;
+    pageSize: number;
+    total: number;
+  }>(`/api/admin/sub-admins?page=${page}&q=${encodeURIComponent(term)}`);
+
+  // Waits for a pause in typing, so a name is one request rather than one per letter.
+  const search = (value: string) => {
+    setQuery(value);
+    if (pending.current) clearTimeout(pending.current);
+    pending.current = setTimeout(() => {
+      setTerm(value.trim());
+      setPage(1);
+    }, 300);
+  };
   const [note, setNote] = useState<string | null>(null);
+  const first = data ? (data.page - 1) * data.pageSize + 1 : 0;
 
   const act = async (id: string, action: string, currency?: string) => {
     const res = await adminAction("/api/admin/sub-admins", "PATCH", { id, action, currency });
@@ -43,9 +64,25 @@ export default function SubAdminsPage() {
       {note && <p className="text-[12px] text-[var(--text-muted)]">{note}</p>}
       {error && <p className="text-[13px] text-[var(--lose)]">{error}</p>}
 
-      <Panel title={`Partners${data ? ` (${data.partners.length})` : ""}`}>
+      <Panel
+        title={`Partners${data ? ` (${data.total})` : ""}`}
+        action={
+          <input
+            type="search"
+            value={query}
+            onChange={(e) => search(e.target.value)}
+            placeholder="Search name, email, phone or code"
+            aria-label="Search partners"
+            className="w-56 max-w-[60%] rounded bg-[var(--surface-2)] px-2.5 py-1 text-[12px] text-[var(--text)] outline-none placeholder:text-[var(--text-faint)]"
+          />
+        }
+      >
         {busy && !data ? (
           <p className="p-6 text-[13px] text-[var(--text-muted)]">Loading…</p>
+        ) : data && data.total === 0 ? (
+          <p className="p-6 text-[13px] text-[var(--text-muted)]">
+            {term ? `No partner matches “${term}”.` : "No partners yet."}
+          </p>
         ) : (
           <Table head={["Partner", "Code", "Players", "Today", "Owed", "Lifetime", "Pay to", "Actions"]}>
             {(data?.partners ?? []).map((p) => (
@@ -108,6 +145,24 @@ export default function SubAdminsPage() {
               </tr>
             ))}
           </Table>
+        )}
+        {data && data.total > 0 && (
+          <footer className="flex items-center justify-between gap-2 border-t border-[var(--line)] px-4 py-2.5">
+            <p className="text-[11px] text-[var(--text-muted)]">
+              {first}–{first + data.partners.length - 1} of {data.total}
+            </p>
+            <div className="flex items-center gap-2">
+              <Button disabled={data.page <= 1} onClick={() => setPage(data.page - 1)}>
+                Previous
+              </Button>
+              <span className="text-[11px] text-[var(--text-muted)]">
+                Page {data.page} of {data.pages}
+              </span>
+              <Button disabled={data.page >= data.pages} onClick={() => setPage(data.page + 1)}>
+                Next
+              </Button>
+            </div>
+          </footer>
         )}
       </Panel>
     </div>
