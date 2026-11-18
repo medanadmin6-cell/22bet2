@@ -1,4 +1,5 @@
 import { alphapaySessionUrl } from "./alphapay-url";
+import { alphapayPayoutFetch, isAlphapayPayoutPath } from "./alphapay-payout";
 import type { Gateway } from "./countries";
 import {
   cardsConfigured,
@@ -810,6 +811,9 @@ async function alphapayRequest(
 ): Promise<{ ok: true; data: Record<string, unknown> } | { ok: false; error: string }> {
   const key = env("ALPHAPAY_SECRET_KEY");
   if (!key) return { ok: false, error: "Mobile money is not available right now" };
+  // Payout routes are the only AlphaPay calls that must leave via the static
+  // proxy. Checkout, status, and the webhook stay on a direct connection.
+  if (isAlphapayPayoutPath(path)) return alphapayPayoutCall(path, init, key);
   try {
     const res = await fetch(`${alphapayApiBase()}${path}`, {
       ...init,
@@ -821,19 +825,86 @@ async function alphapayRequest(
       cache: "no-store",
       signal: AbortSignal.timeout(25_000),
     });
-    const json = (await res.json().catch(() => null)) as Record<string, unknown> | null;
-    const data = ((json && typeof json === "object" && "data" in json ? json.data : json) ??
-      {}) as Record<string, unknown>;
-    if (!res.ok || json?.success === false) {
-      const message = alphapayErrorMessage(json, res.status);
-      console.error("[alphapay]", path, res.status, message);
-      return { ok: false, error: message };
-    }
-    return { ok: true, data };
+    return alphapayCallResult(path, res);
   } catch (err) {
     console.error("[alphapay]", path, err);
     return { ok: false, error: "Could not reach AlphaPay. Try again." };
   }
+}
+
+/**
+ * Send one AlphaPay payout request through ALPHAPAY_PAYOUT_PROXY_URL.
+ * A missing proxy is a failure: calling AlphaPay directly would use Vercel's
+ * changing address, which the payout whitelist rejects.
+ */
+async function alphapayPayoutCall(
+  path: string,
+  init: RequestInit | undefined,
+  key: string,
+): Promise<{ ok: true; data: Record<string, unknown> } | { ok: false; error: string }> {
+  try {
+    const sent = await alphapayPayoutFetch(`${alphapayApiBase()}${path}`, {
+      method: init?.method,
+      headers: alphapayPayoutHeaders(key, init),
+      body: alphapayPayoutBody(init?.body),
+      signal: AbortSignal.timeout(25_000),
+    });
+    if ("error" in sent) return { ok: false, error: sent.error };
+    return alphapayCallResult(path, sent.response);
+  } catch (err) {
+    console.error("[alphapay] payout", path, payoutErrorText(err));
+    return { ok: false, error: "Could not reach AlphaPay. Try again." };
+  }
+}
+
+function alphapayPayoutHeaders(key: string, init?: RequestInit): Record<string, string> {
+  const extra: Record<string, string> = {};
+  const raw = init?.headers;
+  if (raw instanceof Headers) {
+    raw.forEach((value, name) => {
+      extra[name] = value;
+    });
+  } else if (Array.isArray(raw)) {
+    for (const [name, value] of raw) extra[name] = value;
+  } else if (raw) {
+    for (const [name, value] of Object.entries(raw)) {
+      if (typeof value === "string") extra[name] = value;
+    }
+  }
+  delete extra.authorization;
+  delete extra.Authorization;
+  return {
+    Accept: "application/json",
+    ...extra,
+    ...(init?.body ? { "Content-Type": "application/json" } : {}),
+    Authorization: `Bearer ${key}`,
+  };
+}
+
+/** Payout bodies are JSON. Anything else is dropped rather than sent raw. */
+function alphapayPayoutBody(body: BodyInit | null | undefined): string | undefined {
+  return typeof body === "string" ? body : undefined;
+}
+
+/** Drop proxy credentials before a transport error is written to the logs. */
+function payoutErrorText(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  return raw.replace(/\/\/[^\s/@]+(?::[^\s/@]*)?@/g, "//").slice(0, 240);
+}
+
+async function alphapayCallResult(
+  path: string,
+  res: { ok: boolean; status: number; json: () => Promise<unknown> },
+): Promise<{ ok: true; data: Record<string, unknown> } | { ok: false; error: string }> {
+  const json = (await res.json().catch(() => null)) as Record<string, unknown> | null;
+  const data = ((json && typeof json === "object" && "data" in json ? json.data : json) ??
+    {}) as Record<string, unknown>;
+  if (!res.ok || json?.success === false) {
+    const message = alphapayErrorMessage(json, res.status);
+    console.error("[alphapay]", path, res.status, message);
+    return { ok: false, error: message };
+  }
+  return { ok: true, data };
 }
 
 /** One authenticated AlphaPay read. Null when the call does not succeed. */
