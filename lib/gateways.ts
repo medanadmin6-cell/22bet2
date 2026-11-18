@@ -836,6 +836,12 @@ async function alphapayRequest(
   }
 }
 
+/** One authenticated AlphaPay read. Null when the call does not succeed. */
+export async function alphapayRead(path: string): Promise<Record<string, unknown> | null> {
+  const found = await alphapayRequest(path);
+  return found.ok ? found.data : null;
+}
+
 const alphapay: GatewayAdapter = {
   id: "alphapay",
   label: "Mobile Money",
