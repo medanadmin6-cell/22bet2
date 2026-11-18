@@ -1,0 +1,553 @@
+<title>Instant Decoder</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@600;700&family=Barlow:wght@400;500;600&display=swap">
+<style>
+/* Layout: one column of boards, scoreboard-dark by default, odds set in tabular figures */
+:root{
+  --bg:#0c1210; --panel:#131c17; --panel2:#0f1713; --line:#223229;
+  --fg:#e9f1ea; --muted:#8fa497; --accent:#49d07e; --accent-ink:#0a2616;
+  --warn:#e3b23c; --bad:#e26a55; --chip:#1b2a21;
+  --disp:"Barlow Semi Condensed","Arial Narrow",Arial,sans-serif;
+  --body:"Barlow","Segoe UI",Arial,sans-serif;
+  color-scheme: dark;
+}
+@media (prefers-color-scheme: light){
+  :root:not([data-theme="dark"]){
+    --bg:#f2f5f1; --panel:#ffffff; --panel2:#eef3ee; --line:#d6e0d6;
+    --fg:#17211a; --muted:#5c6c60; --accent:#15824a; --accent-ink:#ffffff;
+    --warn:#8a6400; --bad:#b03e2c; --chip:#e5eee6;
+    color-scheme: light;
+  }
+}
+:root[data-theme="light"]{
+  --bg:#f2f5f1; --panel:#ffffff; --panel2:#eef3ee; --line:#d6e0d6;
+  --fg:#17211a; --muted:#5c6c60; --accent:#15824a; --accent-ink:#ffffff;
+  --warn:#8a6400; --bad:#b03e2c; --chip:#e5eee6;
+  color-scheme: light;
+}
+body{
+  background:var(--bg); color:var(--fg); font-family:var(--body);
+  padding-left:max(16px, env(safe-area-inset-left, 0px));
+  padding-right:max(16px, env(safe-area-inset-right, 0px));
+  padding-block:20px 120px;
+  font-size:15px; line-height:1.45;
+}
+.wrap{max-width:760px; margin:0 auto; display:flex; flex-direction:column; gap:16px;}
+h1{font-family:var(--disp); font-weight:700; font-size:30px; margin:0; letter-spacing:.2px; text-wrap:balance;}
+h2{font-family:var(--disp); font-weight:600; font-size:19px; margin:0;}
+.sub{color:var(--muted); margin:4px 0 0;}
+.notice{
+  border:1px solid var(--line); border-left:3px solid var(--warn);
+  background:var(--panel); padding:10px 12px; border-radius:6px; color:var(--muted); font-size:14px;
+}
+.notice b{color:var(--fg);}
+.card{background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px;}
+.drop{
+  border:1.5px dashed var(--line); border-radius:8px; padding:22px 14px; text-align:center;
+  color:var(--muted); cursor:pointer; transition:border-color .15s;
+}
+.drop:hover,.drop:focus-visible{border-color:var(--accent); outline:none;}
+.drop.on{border-color:var(--accent); color:var(--fg);}
+.thumbs{display:flex; flex-wrap:wrap; gap:8px; margin-top:10px;}
+.thumbs:empty{display:none;}
+.thumb{position:relative;}
+.thumb img{height:84px; width:auto; border-radius:6px; border:1px solid var(--line); display:block;}
+.thumb button{
+  position:absolute; top:-6px; right:-6px; width:20px; height:20px; border-radius:50%;
+  border:none; background:var(--bad); color:#fff; font-size:12px; line-height:1; cursor:pointer;
+}
+.btnrow{display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:12px;}
+button.primary{
+  font-family:var(--disp); font-weight:600; font-size:16px; letter-spacing:.3px;
+  background:var(--accent); color:var(--accent-ink); border:none; border-radius:7px;
+  padding:10px 20px; cursor:pointer;
+}
+button.primary:disabled{opacity:.5; cursor:default;}
+button.ghost{
+  background:none; border:1px solid var(--line); color:var(--muted); border-radius:7px;
+  padding:9px 14px; cursor:pointer; font-size:14px;
+}
+button.ghost:hover{color:var(--fg);}
+button:focus-visible{outline:2px solid var(--accent); outline-offset:2px;}
+.status{color:var(--muted); font-size:14px; min-height:1.2em;}
+.status.err{color:var(--bad);}
+details{border:1px solid var(--line); border-radius:10px; background:var(--panel);}
+details summary{padding:12px 14px; cursor:pointer; font-family:var(--disp); font-weight:600; font-size:16px;}
+details .inner{padding:0 14px 14px; display:flex; flex-direction:column; gap:10px;}
+textarea{
+  width:100%; box-sizing:border-box; min-height:110px; background:var(--panel2); color:var(--fg);
+  border:1px solid var(--line); border-radius:7px; padding:10px; font:13px/1.6 ui-monospace,Consolas,monospace;
+}
+.hint{color:var(--muted); font-size:13px;}
+.hint code{background:var(--chip); padding:1px 5px; border-radius:4px;}
+
+/* results */
+.sumrow{display:flex; flex-wrap:wrap; gap:8px;}
+.sumchip{
+  background:var(--chip); border:1px solid var(--line); border-radius:999px;
+  padding:5px 12px; font-size:13px; color:var(--muted);
+}
+.sumchip b{color:var(--fg); font-variant-numeric:tabular-nums;}
+.leaguehead{
+  font-family:var(--disp); font-weight:600; font-size:14px; letter-spacing:1.2px; text-transform:uppercase;
+  color:var(--muted); margin:6px 0 -6px;
+}
+.match{background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px 14px; display:flex; flex-direction:column; gap:9px;}
+.match.example{border-style:dashed;}
+.mhead{display:flex; align-items:baseline; gap:10px; flex-wrap:wrap;}
+.teams{font-family:var(--disp); font-weight:700; font-size:19px; letter-spacing:.4px;}
+.teams .vs{color:var(--muted); font-weight:600; font-size:14px; padding:0 2px;}
+.tag{font-size:11.5px; letter-spacing:.6px; text-transform:uppercase; border-radius:4px; padding:2px 7px; background:var(--chip); color:var(--muted);}
+.tag.strong{background:var(--accent); color:var(--accent-ink);}
+.tag.flip{background:var(--chip); color:var(--warn); border:1px solid var(--warn);}
+.mhead .margin{margin-left:auto; font-size:12.5px; color:var(--muted); font-variant-numeric:tabular-nums;}
+.bar{display:flex; height:10px; border-radius:5px; overflow:hidden; border:1px solid var(--line);}
+.bar .h{background:var(--accent);}
+.bar .d{background:var(--muted); opacity:.45;}
+.bar .a{background:var(--warn);}
+.oddsrow{display:flex; gap:8px;}
+.oddsrow button{
+  flex:1; min-width:0; background:var(--panel2); border:1px solid var(--line); border-radius:7px;
+  padding:7px 4px 6px; cursor:pointer; color:var(--fg); display:flex; flex-direction:column; align-items:center; gap:1px;
+}
+.oddsrow button .lab{font-size:11px; letter-spacing:.8px; color:var(--muted);}
+.oddsrow button .odd{font-family:var(--disp); font-weight:700; font-size:17px; font-variant-numeric:tabular-nums; color:var(--accent);}
+.oddsrow button .pct{font-size:12px; color:var(--muted); font-variant-numeric:tabular-nums;}
+.oddsrow button.sel{border-color:var(--accent); background:var(--chip);}
+.oddsrow button.sel .lab{color:var(--accent);}
+.derived{font-size:13.5px; color:var(--muted); font-variant-numeric:tabular-nums;}
+.derived b{color:var(--fg); font-weight:600;}
+
+/* slip */
+.slip{
+  position:fixed; left:0; right:0; bottom:0; z-index:20;
+  background:var(--panel); border-top:1px solid var(--line);
+  padding-left:max(16px, env(safe-area-inset-left, 0px));
+  padding-right:max(16px, env(safe-area-inset-right, 0px));
+  padding-top:10px;
+  padding-bottom:calc(10px + env(safe-area-inset-bottom, 0px));
+}
+.slip .inner{max-width:760px; margin:0 auto; display:flex; flex-direction:column; gap:6px;}
+.sliphead{display:flex; align-items:center; gap:10px;}
+.sliphead h2{font-size:16px;}
+.sliphead .n{background:var(--accent); color:var(--accent-ink); border-radius:999px; font-size:12px; font-weight:700; padding:1px 8px;}
+.sliphead button{margin-left:auto;}
+.slipstats{display:flex; flex-wrap:wrap; gap:6px 16px; font-size:13.5px; color:var(--muted); font-variant-numeric:tabular-nums;}
+.slipstats b{color:var(--fg);}
+.slipstats .ev-bad{color:var(--bad); font-weight:600;}
+.slipverdict{font-size:12.5px; color:var(--muted);}
+footer{color:var(--muted); font-size:12.5px; text-align:center; padding-top:8px;}
+@media (prefers-reduced-motion: reduce){ *{transition:none !important;} }
+@media (max-width:460px){ .teams{font-size:17px;} h1{font-size:25px;} }
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>Instant Decoder</h1>
+    <p class="sub">Upload a screenshot of an Instant Football odds board. The page reads the prices and shows what the game's own engine believes: true probabilities, house margin, expected goals and most likely scores.</p>
+  </header>
+
+  <div class="notice"><b>This cannot beat the game.</b> Virtual results are drawn by RNG from the same model that set these odds. Every price carries roughly a 5% house margin, so every bet has negative expected value. This tool only shows you the model honestly.</div>
+
+  <section class="card" id="uploadCard">
+    <h2>Read a screenshot</h2>
+    <div class="drop" id="drop" tabindex="0" role="button" aria-label="Choose or drop screenshots">
+      Tap to choose screenshots, drop them here, or paste from the clipboard.<br>
+      1X2 boards and Over/Under boards both work.
+    </div>
+    <input type="file" id="file" accept="image/*" multiple hidden>
+    <div class="thumbs" id="thumbs"></div>
+    <div class="btnrow">
+      <button class="primary" id="decodeBtn" disabled>Decode odds</button>
+      <button class="ghost" id="stopBtn" hidden>Stop</button>
+      <span class="status" id="status"></span>
+    </div>
+  </section>
+
+  <details id="manual">
+    <summary>Type the odds instead</summary>
+    <div class="inner">
+      <p class="hint">One match per line: <code>HOME AWAY 2.10 3.65 3.33</code> (1&nbsp;X&nbsp;2). Add an Over/Under market with three more numbers: <code>FUL BHA 2.10 3.65 3.33 2.5 1.80 2.02</code> (line, over, under). Start a line with <code>#</code> to set the league, e.g. <code>#England</code>.</p>
+      <textarea id="manualText" spellcheck="false" placeholder="#England
+FUL BHA 2.10 3.65 3.33
+IPS CHE 3.30 3.83 2.06"></textarea>
+      <div class="btnrow" style="margin-top:0">
+        <button class="primary" id="manualBtn">Decode typed odds</button>
+      </div>
+    </div>
+  </details>
+
+  <section id="results" hidden>
+    <div class="wrap" style="padding:0; gap:12px;">
+      <div class="mhead" style="align-items:center;">
+        <h2 id="resultsTitle">Decoded round</h2>
+        <span class="tag" id="exampleTag" hidden>example</span>
+      </div>
+      <div class="sumrow" id="summary"></div>
+      <div id="matchList" style="display:flex; flex-direction:column; gap:10px;"></div>
+      <footer>Probabilities are the prices with the margin removed, assuming the standard Poisson engine virtual games use. Tap an outcome to add it to the slip below and see the combined expected value.</footer>
+    </div>
+  </section>
+</div>
+
+<div class="slip" id="slip" hidden>
+  <div class="inner">
+    <div class="sliphead">
+      <h2>Model slip</h2><span class="n" id="slipN">0</span>
+      <button class="ghost" id="slipClear">Clear</button>
+    </div>
+    <div class="slipstats" id="slipStats"></div>
+    <div class="slipverdict" id="slipVerdict"></div>
+  </div>
+</div>
+
+<script>
+"use strict";
+/* ---------- Poisson engine math ---------- */
+const MAXG = 10;
+function pmfRow(l){ const r=[]; let p=Math.exp(-l); r.push(p); for(let k=1;k<=MAXG;k++){ p*=l/k; r.push(p);} return r; }
+function outcomes(lh,la){
+  const H=pmfRow(lh), A=pmfRow(la);
+  let ph=0,pd=0,pa=0,pov=0,pbtts=0,best=[0,0],bp=0;
+  for(let i=0;i<=MAXG;i++) for(let j=0;j<=MAXG;j++){
+    const p=H[i]*A[j];
+    if(i>j) ph+=p; else if(i===j) pd+=p; else pa+=p;
+    if(i+j>=3) pov+=p;
+    if(i>0&&j>0) pbtts+=p;
+    if(p>bp){ bp=p; best=[i,j]; }
+  }
+  return {ph,pd,pa,pov,pbtts,best,bp};
+}
+function norm3(o1,ox,o2){
+  const a=1/o1,b=1/ox,c=1/o2,s=a+b+c;
+  return {ph:a/s, pd:b/s, pa:c/s, margin:s-1};
+}
+function norm2(ov,un){
+  const a=1/ov,b=1/un,s=a+b;
+  return {pov:a/s, pun:b/s, margin:s-1};
+}
+/* total-goals lambda from an O/U line: solve P(N <= floor(line)) = pUnder */
+function lambdaFromUnder(line,pUnder){
+  const k=Math.floor(line);
+  const cdf=l=>{ let s=0,p=Math.exp(-l); for(let i=0;i<=k;i++){ s+=p; p*=l/(i+1); } return s; };
+  let lo=0.2, hi=9;
+  for(let i=0;i<40;i++){ const m=(lo+hi)/2; if(cdf(m)>pUnder) lo=m; else hi=m; }
+  return (lo+hi)/2;
+}
+/* fit lambda_home, lambda_away to the normalized 1X2 probabilities.
+   If ltot is known from an O/U market, only the split is fitted. */
+function fit1x2(tph,tpd,ltot){
+  let bestErr=Infinity, bl=[1.3,1.1];
+  const tryPt=(lh,la)=>{
+    if(lh<=0.03||la<=0.03) return;
+    const o=outcomes(lh,la);
+    const e=(o.ph-tph)*(o.ph-tph)+(o.pd-tpd)*(o.pd-tpd);
+    if(e<bestErr){ bestErr=e; bl=[lh,la]; }
+  };
+  if(ltot){
+    for(let r=0.06;r<=0.94;r+=0.01) tryPt(ltot*r, ltot*(1-r));
+  }else{
+    for(let lh=0.2;lh<=3.8;lh+=0.15) for(let la=0.2;la<=3.8;la+=0.15) tryPt(lh,la);
+    const [ch,ca]=bl;
+    for(let lh=ch-0.14;lh<=ch+0.14;lh+=0.02) for(let la=ca-0.14;la<=ca+0.14;la+=0.02) tryPt(lh,la);
+  }
+  return bl;
+}
+function analyze(row){
+  const m={...row};
+  if(!(m.one&&m.x&&m.two)) {
+    if(m.over&&m.under&&m.line!=null){
+      const t=norm2(m.over,m.under);
+      m.tot={...t, lam:lambdaFromUnder(m.line,t.pun)};
+    }
+    return m;
+  }
+  const n=norm3(m.one,m.x,m.two);
+  m.probs=n;
+  let ltot=null;
+  if(m.over&&m.under&&m.line!=null){
+    const t=norm2(m.over,m.under);
+    ltot=lambdaFromUnder(m.line,t.pun);
+    m.tot={...t, lam:ltot};
+  }
+  const [lh,la]=fit1x2(n.ph,n.pd,ltot);
+  m.lh=lh; m.la=la;
+  const o=outcomes(lh,la);
+  m.modal=o.best; m.modalP=o.bp; m.pOver25=o.pov; m.pbtts=o.pbtts;
+  const top=Math.max(n.ph,n.pd,n.pa);
+  m.pick = top===n.ph?"1":(top===n.pa?"2":"X");
+  m.pickP = top;
+  m.flip = Math.abs(n.ph-n.pa)<0.04 && n.ph<0.45 && n.pa<0.45;
+  m.strong = top>=0.55;
+  return m;
+}
+
+/* ---------- state ---------- */
+const files=[];       // {file, url}
+let matches=[];       // analyzed rows
+let slipLegs=[];      // {key,label,odds,prob}
+let isExample=true;
+const $=id=>document.getElementById(id);
+const pc=p=>(p*100).toFixed(p>=0.1?0:1)+"%";
+const f2=x=>Number(x).toFixed(2);
+
+/* ---------- rendering ---------- */
+function render(){
+  const list=$("matchList"); list.innerHTML="";
+  $("results").hidden = matches.length===0;
+  $("exampleTag").hidden = !isExample;
+  $("resultsTitle").textContent = isExample ? "Example round" : "Decoded round";
+
+  const withOdds=matches.filter(m=>m.probs);
+  const avgMargin=withOdds.length? withOdds.reduce((s,m)=>s+m.probs.margin,0)/withOdds.length : 0;
+  const strong=withOdds.filter(m=>m.strong).length;
+  const flips=withOdds.filter(m=>m.flip).length;
+  $("summary").innerHTML =
+    `<span class="sumchip"><b>${matches.length}</b> matches</span>`+
+    `<span class="sumchip">house margin <b>${(avgMargin*100).toFixed(1)}%</b></span>`+
+    `<span class="sumchip"><b>${strong}</b> strong favorites (&ge;55%)</span>`+
+    `<span class="sumchip"><b>${flips}</b> coin-flips</span>`;
+
+  let lastLeague=null;
+  matches.forEach((m,idx)=>{
+    if(m.league && m.league!==lastLeague){
+      lastLeague=m.league;
+      const h=document.createElement("div");
+      h.className="leaguehead"; h.textContent=m.league;
+      list.appendChild(h);
+    }
+    const el=document.createElement("div");
+    el.className="match"+(isExample?" example":"");
+    let html=`<div class="mhead"><span class="teams">${esc(m.home)}<span class="vs"> vs </span>${esc(m.away)}</span>`;
+    if(m.strong) html+=`<span class="tag strong">pick ${m.pick} &middot; ${pc(m.pickP)}</span>`;
+    else if(m.flip) html+=`<span class="tag flip">coin-flip</span>`;
+    else if(m.pick) html+=`<span class="tag">lean ${m.pick} &middot; ${pc(m.pickP)}</span>`;
+    if(m.probs) html+=`<span class="margin">margin ${(m.probs.margin*100).toFixed(1)}%</span>`;
+    html+=`</div>`;
+    if(m.probs){
+      const n=m.probs;
+      html+=`<div class="bar" role="img" aria-label="Home ${pc(n.ph)}, draw ${pc(n.pd)}, away ${pc(n.pa)}">`+
+        `<span class="h" style="width:${n.ph*100}%"></span>`+
+        `<span class="d" style="width:${n.pd*100}%"></span>`+
+        `<span class="a" style="width:${n.pa*100}%"></span></div>`;
+      html+=`<div class="oddsrow">`+
+        oddBtn(idx,"1",m.one,n.ph)+oddBtn(idx,"X",m.x,n.pd)+oddBtn(idx,"2",m.two,n.pa)+`</div>`;
+      html+=`<div class="derived">xG <b>${m.lh.toFixed(2)}</b>&ndash;<b>${m.la.toFixed(2)}</b>`+
+        ` &middot; most likely <b>${m.modal[0]}&ndash;${m.modal[1]}</b> (${pc(m.modalP)})`+
+        ` &middot; over 2.5: <b>${pc(m.pOver25)}</b> &middot; BTTS: <b>${pc(m.pbtts)}</b>`;
+      if(m.tot) html+=` &middot; O/U ${m.line}: over <b>${pc(m.tot.pov)}</b>`;
+      html+=`</div>`;
+    }else if(m.tot){
+      html+=`<div class="derived">O/U ${m.line}: over <b>${pc(m.tot.pov)}</b> / under <b>${pc(m.tot.pun)}</b>`+
+        ` &middot; expected goals <b>${m.tot.lam.toFixed(2)}</b> &middot; margin ${(m.tot.margin*100).toFixed(1)}%</div>`;
+      html+=`<div class="oddsrow">`+
+        ouBtn(idx,"Over "+m.line,m.over,m.tot.pov)+ouBtn(idx,"Under "+m.line,m.under,m.tot.pun)+`</div>`;
+    }
+    el.innerHTML=html;
+    list.appendChild(el);
+  });
+  list.querySelectorAll("button[data-key]").forEach(b=>{
+    b.addEventListener("click",()=>toggleLeg(b.dataset.key,b.dataset.label,+b.dataset.odds,+b.dataset.prob));
+  });
+  renderSlip();
+}
+function oddBtn(idx,lab,odds,prob){
+  const key=idx+":"+lab;
+  const sel=slipLegs.some(l=>l.key===key)?" sel":"";
+  return `<button class="${sel.trim()}" data-key="${key}" data-label="${esc(matches[idx].home)}-${esc(matches[idx].away)} ${lab}" data-odds="${odds}" data-prob="${prob}">`+
+    `<span class="lab">${lab}</span><span class="odd">${f2(odds)}</span><span class="pct">${pc(prob)}</span></button>`;
+}
+function ouBtn(idx,lab,odds,prob){
+  const key=idx+":"+lab;
+  const sel=slipLegs.some(l=>l.key===key)?" sel":"";
+  return `<button class="${sel.trim()}" data-key="${key}" data-label="${esc(matches[idx].home)}-${esc(matches[idx].away)} ${lab}" data-odds="${odds}" data-prob="${prob}">`+
+    `<span class="lab">${esc(lab)}</span><span class="odd">${f2(odds)}</span><span class="pct">${pc(prob)}</span></button>`;
+}
+function esc(s){ return String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+
+function toggleLeg(key,label,odds,prob){
+  const i=slipLegs.findIndex(l=>l.key===key);
+  if(i>=0) slipLegs.splice(i,1);
+  else {
+    // one leg per match: replace a sibling pick
+    const idx=key.split(":")[0];
+    const j=slipLegs.findIndex(l=>l.key.split(":")[0]===idx);
+    if(j>=0) slipLegs.splice(j,1);
+    slipLegs.push({key,label,odds,prob});
+  }
+  render();
+}
+function renderSlip(){
+  const slip=$("slip");
+  slip.hidden = slipLegs.length===0;
+  $("slipN").textContent=slipLegs.length;
+  if(!slipLegs.length) return;
+  const prob=slipLegs.reduce((p,l)=>p*l.prob,1);
+  const payout=slipLegs.reduce((p,l)=>p*l.odds,1);
+  const fair=1/prob;
+  const ev=(prob*payout-1)*100;
+  $("slipStats").innerHTML =
+    `<span>model probability <b>${pc(prob)}</b></span>`+
+    `<span>pays <b>${f2(payout)}x</b></span>`+
+    `<span>fair would be <b>${f2(fair)}x</b></span>`+
+    `<span>expected value <b class="ev-bad">${ev.toFixed(1)}%</b> per stake</span>`;
+  const n=slipLegs.length;
+  $("slipVerdict").textContent =
+    n===1
+      ? "One leg: this hits at the rate shown, and the gap between fair and paid odds is the house margin."
+      : `This ${n}-leg slip lands about ${Math.max(1,Math.round(prob*100))} times in 100 rounds. Each added leg multiplies the margin against you.`;
+}
+
+/* ---------- upload / decode ---------- */
+let sampleFn=null, imgLimits=null, ctl=null;
+(async()=>{
+  try{
+    sampleFn = await claude.use("sample");
+    if(sampleFn){
+      const lim = await sampleFn.limits().catch(()=>null);
+      imgLimits = lim && lim.images ? lim.images : null;
+    }
+  }catch(e){ sampleFn=null; }
+  if(!sampleFn || !imgLimits){
+    $("uploadCard").querySelector(".drop").textContent =
+      "Screenshot reading is unavailable in this view. Use “Type the odds instead” below.";
+    $("decodeBtn").hidden=true;
+  }else{
+    $("file").accept = imgLimits.mediaTypes.join(",");
+  }
+})();
+
+const drop=$("drop"), fileInput=$("file");
+drop.addEventListener("click",()=>fileInput.click());
+drop.addEventListener("keydown",e=>{ if(e.key==="Enter"||e.key===" "){ e.preventDefault(); fileInput.click(); }});
+fileInput.addEventListener("change",()=>{ addFiles(fileInput.files); fileInput.value=""; });
+["dragover","dragenter"].forEach(ev=>drop.addEventListener(ev,e=>{ e.preventDefault(); drop.classList.add("on"); }));
+["dragleave","drop"].forEach(ev=>drop.addEventListener(ev,e=>{ e.preventDefault(); drop.classList.remove("on"); }));
+drop.addEventListener("drop",e=>addFiles(e.dataTransfer.files));
+document.addEventListener("paste",e=>{
+  const items=[...(e.clipboardData?.items||[])].filter(i=>i.type.startsWith("image/"));
+  if(items.length) addFiles(items.map(i=>i.getAsFile()).filter(Boolean));
+});
+function addFiles(fl){
+  const max=imgLimits?imgLimits.maxCount:5;
+  for(const f of fl){
+    if(!f || !f.type.startsWith("image/")) continue;
+    if(files.length>=max){ setStatus(`At most ${max} screenshots per decode.`,false); break; }
+    files.push({file:f, url:URL.createObjectURL(f)});
+  }
+  renderThumbs();
+}
+function renderThumbs(){
+  const t=$("thumbs"); t.innerHTML="";
+  files.forEach((f,i)=>{
+    const d=document.createElement("div"); d.className="thumb";
+    const img=document.createElement("img"); img.src=f.url; img.alt="screenshot "+(i+1);
+    const x=document.createElement("button"); x.textContent="×"; x.setAttribute("aria-label","Remove screenshot");
+    x.addEventListener("click",()=>{ URL.revokeObjectURL(f.url); files.splice(i,1); renderThumbs(); });
+    d.append(img,x); t.appendChild(d);
+  });
+  $("decodeBtn").disabled = files.length===0;
+}
+function setStatus(msg,err){ const s=$("status"); s.textContent=msg||""; s.classList.toggle("err",!!err); }
+
+const PROMPT =
+`These images are screenshots of a virtual football betting board ("Instant Football" style).
+Extract every match row whose numbers are fully readable. Reply with ONLY a JSON array; each element:
+{"home":"FUL","away":"BHA","league":"England","one":2.10,"x":3.65,"two":3.33,"line":null,"over":null,"under":null}
+Rules:
+- home/away are the short team codes exactly as shown (2-4 letters).
+- league is the country/section header the row sits under, or null if not visible.
+- one/x/two are the decimal odds in the 1, X, 2 columns; null if the visible market is not 1X2.
+- line/over/under: only when the row shows an Over/Under market; line is the goals number shown (e.g. 2.5 or 3.5); otherwise all three null.
+- Skip rows that are cut off or blurred. Do not invent numbers. No text outside the JSON array.`;
+
+$("decodeBtn").addEventListener("click",async()=>{
+  if(!sampleFn||!files.length) return;
+  ctl=new AbortController();
+  $("decodeBtn").disabled=true; $("stopBtn").hidden=false;
+  setStatus("Reading odds from the screenshot… this can take up to a minute.",false);
+  try{
+    const rows=await sampleFn.json(PROMPT,{
+      images:files.map(f=>f.file),
+      signal:ctl.signal,
+      cache:false,
+      onText:({text})=>setStatus(`Reading… ${text.length} characters so far.`,false)
+    });
+    ingest(rows,false);
+  }catch(e){
+    const map={
+      not_granted:"You declined Claude access for this page, so screenshots can’t be read. Type the odds instead.",
+      rate_limited:"Too many reads right now. Wait a minute and try again.",
+      image_rejected:"That image couldn’t be used. Try a clean screenshot (PNG or JPEG).",
+      invalid_json:"The reply couldn’t be parsed. Try again, or crop the screenshot tighter.",
+      cancelled:"Stopped.",
+      refused:"Claude declined to read this image."
+    };
+    setStatus(map[e.code]||("Reading failed ("+(e.code||"error")+"). Try again or type the odds."), e.code!=="cancelled");
+  }finally{
+    $("decodeBtn").disabled=files.length===0; $("stopBtn").hidden=true; ctl=null;
+  }
+});
+$("stopBtn").addEventListener("click",()=>ctl?.abort());
+
+function ingest(rows,fromManual){
+  if(!Array.isArray(rows)) rows = rows && Array.isArray(rows.matches) ? rows.matches : [];
+  const clean=[];
+  const num=v=>{ const n=Number(v); return Number.isFinite(n)&&n>1&&n<1000?n:null; };
+  for(const r of rows){
+    if(!r||typeof r!=="object") continue;
+    const home=String(r.home||"").trim().toUpperCase().slice(0,5);
+    const away=String(r.away||"").trim().toUpperCase().slice(0,5);
+    if(!home||!away) continue;
+    const row={home,away,league:r.league?String(r.league).trim():null,
+      one:num(r.one),x:num(r.x),two:num(r.two),
+      line:(r.line!=null&&isFinite(r.line))?Number(r.line):null,over:num(r.over),under:num(r.under)};
+    if(!(row.one&&row.x&&row.two)&&!(row.line!=null&&row.over&&row.under)) continue;
+    // merge with an existing row for the same fixture (1X2 from one shot, O/U from another)
+    const prev=clean.find(c=>c.home===home&&c.away===away);
+    if(prev){
+      if(row.one&&!prev.one){ prev.one=row.one; prev.x=row.x; prev.two=row.two; }
+      if(row.over&&!prev.over){ prev.line=row.line; prev.over=row.over; prev.under=row.under; }
+    }else clean.push(row);
+  }
+  if(!clean.length){ setStatus("No readable match rows found. Try a sharper screenshot or type the odds.",true); return; }
+  matches=clean.map(analyze);
+  isExample=false; slipLegs=[];
+  setStatus(`Decoded ${matches.length} matches.`,false);
+  try{ localStorage.setItem("lastRound",JSON.stringify(clean)); }catch(e){}
+  render();
+  $("results").scrollIntoView({behavior:"smooth"});
+}
+
+/* manual entry */
+$("manualBtn").addEventListener("click",()=>{
+  const rows=[]; let league=null;
+  for(let line of $("manualText").value.split("\n")){
+    line=line.trim(); if(!line) continue;
+    if(line[0]==="#"){ league=line.slice(1).trim()||null; continue; }
+    const t=line.split(/[\s,;|]+/).filter(Boolean);
+    if(t.length<5) continue;
+    const nums=t.slice(2).map(Number);
+    const row={home:t[0],away:t[1],league,one:nums[0],x:nums[1],two:nums[2],line:null,over:null,under:null};
+    if(nums.length>=6){ row.line=nums[3]; row.over=nums[4]; row.under=nums[5]; }
+    rows.push(row);
+  }
+  ingest(rows,true);
+});
+
+/* ---------- first frame: example round (from a real 22bet instant board) ---------- */
+const EXAMPLE=[
+  {home:"FCB",away:"OSA",league:"Spain",one:1.34,x:5.19,two:8.87,line:null,over:null,under:null},
+  {home:"VIL",away:"RBB",league:"Spain",one:1.65,x:4.48,two:4.53,line:null,over:null,under:null},
+  {home:"CEL",away:"RMA",league:"Spain",one:3.02,x:3.84,two:2.18,line:null,over:null,under:null},
+  {home:"BMU",away:"BMG",league:"Germany",one:1.31,x:6.34,two:7.78,line:null,over:null,under:null},
+  {home:"PAD",away:"BVB",league:"Germany",one:3.09,x:3.87,two:2.14,line:null,over:null,under:null}
+];
+(function boot(){
+  let saved=null;
+  try{ saved=JSON.parse(localStorage.getItem("lastRound")||"null"); }catch(e){}
+  if(Array.isArray(saved)&&saved.length){ matches=saved.map(analyze); isExample=false; }
+  else { matches=EXAMPLE.map(analyze); isExample=true; }
+  render();
+})();
+</script>
