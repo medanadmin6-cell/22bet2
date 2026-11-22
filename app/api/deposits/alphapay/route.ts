@@ -178,7 +178,11 @@ async function settle(reference: string): Promise<boolean> {
     .maybeSingle();
 
   if (!payment || payment.provider !== "alphapay") return true;
-  if (payment.status !== "pending") return true;
+  // A failed row is asked about again. One checkout session takes several
+  // attempts: the first can fail, which marks the row failed, and the player
+  // can then pay on the same page. That success must still credit.
+  const wasFailed = payment.status === "failed";
+  if (payment.status !== "pending" && !wasFailed) return true;
 
   try {
     const outcome = await adapterFor("alphapay").status(
@@ -204,7 +208,8 @@ async function settle(reference: string): Promise<boolean> {
         .eq("status", "pending");
       return true;
     }
-    return false;
+    // Nothing new to record for a row already written off, so no retry.
+    return wasFailed;
   } catch (err) {
     console.error("[alphapay] could not settle from the callback", reference, err);
     return false;
