@@ -987,6 +987,128 @@ const alphapay: GatewayAdapter = {
   },
 };
 
+// ---------------------------------------------------------------- OpusTack
+
+const OPUSTACK_BASE = "https://opustack-pay-production.up.railway.app";
+
+/**
+ * OpusTack Pay: Ghana mobile money on a hosted checkout.
+ *
+ * Initialize opens a checkout the player is redirected to, where they pick the
+ * network and approve the prompt. Three things in their API shape this:
+ *
+ *   - Amounts are whole pesewas, in and out. GHS 200 goes out as 20000 and a
+ *     verify answers 20000, so both directions are converted here.
+ *   - They take our own reference and answer to it, so nothing of theirs has
+ *     to be remembered to ask after a charge later.
+ *   - The customer comes back to callback_url with ?reference= added, so the
+ *     return goes to /api/deposits/opustack rather than a URL that already
+ *     carries a query string of its own.
+ *
+ * sk_test_ and sk_live_ keys share one host. The key decides the mode.
+ */
+const opustack: GatewayAdapter = {
+  id: "opustack",
+  label: "Mobile Money",
+  async start({ reference, amount, currency, email, redirectUrl }) {
+    const key = env("OPUSTACK_SECRET_KEY");
+    if (!key) return { ok: false, error: "Mobile money is not available right now" };
+
+    let origin: string;
+    try {
+      origin = new URL(redirectUrl).origin;
+    } catch {
+      return { ok: false, error: "Mobile money is not available right now" };
+    }
+
+    try {
+      const res = await fetch(`${OPUSTACK_BASE}/v1/transactions/initialize`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          // An email is required and Ghana players rarely have one on file.
+          email: email || `deposit+${reference.toLowerCase()}@${new URL(origin).hostname}`,
+          amount: Math.round(amount * 100),
+          currency: currency.toUpperCase(),
+          reference,
+          callback_url: `${origin}/api/deposits/opustack`,
+          metadata: { reference },
+        }),
+        cache: "no-store",
+        signal: AbortSignal.timeout(25_000),
+      });
+
+      const json = (await res.json().catch(() => null)) as Record<string, unknown> | null;
+      const data = (json?.data ?? {}) as Record<string, unknown>;
+      const checkout = typeof data.authorization_url === "string" ? data.authorization_url : "";
+
+      if (!res.ok || json?.status !== true || !/^https:\/\//.test(checkout)) {
+        console.error("[opustack] start refused", { reference, status: res.status, message: json?.message });
+        // 401 is a bad key and 403 is live payments paused on the account:
+        // both are the operator's to fix, not something the player did.
+        if (res.status === 401 || res.status === 403) {
+          return { ok: false, error: "Deposits are being set up. Please try again shortly." };
+        }
+        return { ok: false, error: "Could not start your payment. Please try again." };
+      }
+
+      return {
+        ok: true,
+        redirectUrl: checkout,
+        metadata: {
+          opustack_access_code: typeof data.access_code === "string" ? data.access_code : undefined,
+          checkout_url: checkout,
+        },
+      };
+    } catch (err) {
+      console.error("[opustack] start", reference, err);
+      return { ok: false, error: "Could not start checkout" };
+    }
+  },
+
+  async status(reference) {
+    const key = env("OPUSTACK_SECRET_KEY");
+    if (!key) return { status: "pending" };
+
+    try {
+      const res = await fetch(
+        `${OPUSTACK_BASE}/v1/transactions/verify/${encodeURIComponent(reference)}`,
+        {
+          headers: { Authorization: `Bearer ${key}` },
+          cache: "no-store",
+          signal: AbortSignal.timeout(15_000),
+        },
+      );
+      // Not found is a start that never reached them, not a refusal.
+      if (!res.ok) return { status: "pending" };
+
+      const json = (await res.json().catch(() => null)) as Record<string, unknown> | null;
+      const data = (json?.data ?? {}) as Record<string, unknown>;
+      const state = String(data.status ?? "").toLowerCase();
+
+      if (state === "reversed") {
+        // Refunded after approval. Never credits, and logged loudly because a
+        // credit may already stand against it and only a human can undo that.
+        console.error("[opustack] charge reversed after approval", reference);
+        return { status: "failed" };
+      }
+      if (state && !["pending", "success", "failed"].includes(state)) {
+        console.warn("[opustack] unmapped status", { reference, state });
+      }
+
+      // Pesewas. The gross is credited; their fee is the cost of collection.
+      const paid = Number(data.amount) / 100;
+      return {
+        status: state === "success" ? "confirmed" : state === "failed" ? "failed" : "pending",
+        paidAmount: Number.isFinite(paid) && paid > 0 ? paid : undefined,
+        paidCurrency: typeof data.currency === "string" ? data.currency : undefined,
+      };
+    } catch {
+      return { status: "pending" };
+    }
+  },
+};
+
 const manual: GatewayAdapter = {
   id: "manual",
   label: "Mobile money transfer",
@@ -1005,6 +1127,7 @@ const ADAPTERS: Record<Gateway, GatewayAdapter> = {
   theteller,
   pycue,
   alphapay,
+  opustack,
   manual,
 };
 

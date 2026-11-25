@@ -12,6 +12,7 @@ export type Gateway =
   | "theteller"
   | "pycue"
   | "alphapay"
+  | "opustack"
   | "manual";
 
 export type KycKind = "bvn" | "nin" | "national_id";
